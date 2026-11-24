@@ -1,0 +1,345 @@
+syntax = "proto3";
+
+// Application protocol spoken between a paired phone and a local bridge.
+// Frames are serialized, then end-to-end encrypted; the relay only ever sees
+// ciphertext and never decodes these messages.
+package sidekick.v1;
+
+option go_package = "github.com/DDGRCF/sidekick.server/gen/go/sidekick/v1;sidekickv1";
+option java_multiple_files = true;
+option java_package = "dev.ddgrcf.sidekick.proto.v1";
+
+// Current protocol version carried in every Frame.
+enum ProtocolVersion {
+  PROTOCOL_VERSION_UNSPECIFIED = 0;
+  PROTOCOL_VERSION_1 = 1;
+}
+
+message Frame {
+  ProtocolVersion version = 1;
+  // Request id, unique per sender and monotonically increasing. 0 for events.
+  uint64 id = 2;
+  // Id of the request this frame answers. 0 for requests and events.
+  uint64 reply_to = 3;
+
+  oneof body {
+    Hello hello = 10;
+    Error error = 11;
+    Ack ack = 12;
+
+    ListSessionsRequest list_sessions = 20;
+    ListSessionsResponse sessions = 21;
+    ListHistoryRequest list_history = 22;
+    ListHistoryResponse history = 23;
+    GetMessagesRequest get_messages = 24;
+    GetMessagesResponse messages = 25;
+
+    SubscribeRequest subscribe = 30;
+    UnsubscribeRequest unsubscribe = 31;
+    SessionEvent event = 32;
+
+    InputRequest input = 40;
+    KeysRequest keys = 41;
+    StartSessionRequest start_session = 42;
+    StartSessionResponse session_started = 43;
+    StopSessionRequest stop_session = 44;
+
+    Presence presence = 50;
+  }
+}
+
+// Sent by both sides right after the encrypted channel is established.
+message Hello {
+  // e.g. "sidekick-bridge/0.1.0" or "sidekick-android/0.1.0".
+  string agent = 1;
+  repeated string capabilities = 2;
+  // Bridge only: tools the phone may start and their abilities.
+  repeated ToolInfo tools = 3;
+  // Bridge only: allow-listed working directories.
+  repeated Workspace workspaces = 4;
+}
+
+message ToolInfo {
+  // sidekick tool name: "codex", "claude", "pi", "devin", "antigravity".
+  string name = 1;
+  bool installed = 2;
+  // True when GetMessages can return structured messages for this tool.
+  // False means only the SCREEN stream is available.
+  bool structured_history = 3;
+}
+
+message Workspace {
+  string cwd = 1;
+  string name = 2;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_INVALID_ARGUMENT = 1;
+  ERROR_CODE_NOT_FOUND = 2;
+  ERROR_CODE_FORBIDDEN = 3;
+  ERROR_CODE_UNAVAILABLE = 4;
+  ERROR_CODE_UNSUPPORTED = 5;
+  ERROR_CODE_INTERNAL = 6;
+}
+
+message Error {
+  ErrorCode code = 1;
+  string message = 2;
+}
+
+message Ack {}
+
+enum Backend {
+  BACKEND_UNSPECIFIED = 0;
+  BACKEND_TMUX = 1;
+  BACKEND_ZELLIJ = 2;
+}
+
+// Provider-native conversation identity. Provider-private metadata
+// (file paths etc.) never leaves the bridge.
+message Conversation {
+  string id = 1;
+  string provider = 2;
+  bool resumable = 3;
+}
+
+// A live (or recently live) multiplexer session running a sidekick tool.
+message Session {
+  // Multiplexer session name, i.e. sidekick's sid:
+  // "<tool> <sha256(cwd) prefix>[ <instance_id>]".
+  string id = 1;
+  string tool = 2;
+  string cwd = 3;
+  string instance_id = 4;
+  string title = 5;
+  Conversation conversation = 6;
+  Backend backend = 7;
+  // The multiplexer session currently exists.
+  bool live = 8;
+  // A local client (Neovim terminal or mux client) is attached right now.
+  bool attached_locally = 9;
+  int64 last_activity_unix_ms = 10;
+}
+
+message ListSessionsRequest {}
+
+message ListSessionsResponse {
+  repeated Session sessions = 1;
+}
+
+// A stored provider conversation, live or not.
+message HistoryEntry {
+  Conversation conversation = 1;
+  string tool = 2;
+  string cwd = 3;
+  string title = 4;
+  int64 created_unix_ms = 5;
+  int64 updated_unix_ms = 6;
+  uint32 message_count = 7;
+  // Short plain-text preview of the last user or assistant message.
+  string preview = 8;
+  // Id of the live Session currently running this conversation, if any.
+  string session_id = 9;
+}
+
+message ListHistoryRequest {
+  // Optional filters; empty means all.
+  string tool = 1;
+  string cwd = 2;
+  // Defaults to 50, capped at 200 by the bridge.
+  uint32 limit = 3;
+  string page_token = 4;
+}
+
+message ListHistoryResponse {
+  // Sorted by updated_unix_ms descending.
+  repeated HistoryEntry entries = 1;
+  string next_page_token = 2;
+}
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_USER = 1;
+  ROLE_ASSISTANT = 2;
+  ROLE_SYSTEM = 3;
+  ROLE_TOOL = 4;
+}
+
+enum ToolCallStatus {
+  TOOL_CALL_STATUS_UNSPECIFIED = 0;
+  TOOL_CALL_STATUS_PENDING = 1;
+  TOOL_CALL_STATUS_RUNNING = 2;
+  TOOL_CALL_STATUS_COMPLETED = 3;
+  TOOL_CALL_STATUS_FAILED = 4;
+}
+
+message TextPart {
+  // Markdown.
+  string text = 1;
+}
+
+message ThinkingPart {
+  string text = 1;
+}
+
+message ToolCallPart {
+  string call_id = 1;
+  string name = 2;
+  // Raw JSON arguments as emitted by the provider.
+  string input_json = 3;
+  ToolCallStatus status = 4;
+}
+
+message ToolResultPart {
+  string call_id = 1;
+  // Possibly truncated by the bridge.
+  string output = 2;
+  bool is_error = 3;
+  bool truncated = 4;
+}
+
+message Part {
+  oneof kind {
+    TextPart text = 1;
+    ThinkingPart thinking = 2;
+    ToolCallPart tool_call = 3;
+    ToolResultPart tool_result = 4;
+  }
+}
+
+// Normalized message on the main chain of a conversation.
+message Message {
+  // Bridge-assigned position on the main chain, starting at 1. Stable for a
+  // given conversation as long as the provider does not rewrite history.
+  uint64 seq = 1;
+  // Provider-native message id when available.
+  string id = 2;
+  Role role = 3;
+  repeated Part parts = 4;
+  int64 created_unix_ms = 5;
+  string model = 6;
+}
+
+message GetMessagesRequest {
+  string tool = 1;
+  string conversation_id = 2;
+  // Return messages with seq > after_seq.
+  uint64 after_seq = 3;
+  // Defaults to 100, capped at 500 by the bridge.
+  uint32 limit = 4;
+}
+
+message GetMessagesResponse {
+  repeated Message messages = 1;
+  bool has_more = 2;
+  // Set when the provider rewrote history (e.g. compaction): the client must
+  // drop its cache for this conversation and refetch from after_seq = 0.
+  bool reset = 3;
+}
+
+enum Stream {
+  STREAM_UNSPECIFIED = 0;
+  // Structured messages; requires ToolInfo.structured_history.
+  STREAM_MESSAGES = 1;
+  // Rendered terminal screen.
+  STREAM_SCREEN = 2;
+}
+
+message SubscribeRequest {
+  string session_id = 1;
+  repeated Stream streams = 2;
+  // For STREAM_MESSAGES: resume after this seq.
+  uint64 after_seq = 3;
+}
+
+message UnsubscribeRequest {
+  string session_id = 1;
+}
+
+// Terminal screen snapshot. v1 always sends full snapshots, throttled by the
+// bridge; incremental updates may be added in a later version.
+message Screen {
+  uint64 revision = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
+  // Visible pane plus scrollback, with ANSI SGR escapes (tmux capture-pane -e).
+  bytes ansi = 4;
+  uint32 cursor_row = 5;
+  uint32 cursor_col = 6;
+}
+
+message SessionClosed {
+  string reason = 1;
+}
+
+message SessionEvent {
+  string session_id = 1;
+  oneof kind {
+    Message message = 10;
+    Screen screen = 11;
+    // Metadata changed (title, conversation, attached_locally, ...).
+    Session updated = 12;
+    SessionClosed closed = 13;
+    // Same semantics as GetMessagesResponse.reset.
+    bool reset = 14;
+  }
+}
+
+message InputRequest {
+  string session_id = 1;
+  // Pasted as-is (bracketed paste), never interpreted as key names.
+  string text = 2;
+  // Press Enter after pasting.
+  bool submit = 3;
+}
+
+// Allow-listed special keys; arbitrary key names are never accepted.
+enum Key {
+  KEY_UNSPECIFIED = 0;
+  KEY_ENTER = 1;
+  KEY_ESCAPE = 2;
+  KEY_TAB = 3;
+  KEY_SHIFT_TAB = 4;
+  KEY_BACKSPACE = 5;
+  KEY_UP = 6;
+  KEY_DOWN = 7;
+  KEY_LEFT = 8;
+  KEY_RIGHT = 9;
+  KEY_CTRL_C = 10;
+  KEY_CTRL_D = 11;
+}
+
+message KeysRequest {
+  string session_id = 1;
+  repeated Key keys = 2;
+}
+
+message StartSessionRequest {
+  string tool = 1;
+  // Must be inside an allow-listed Workspace.
+  string cwd = 2;
+  // Optional provider conversation to resume.
+  string resume_conversation_id = 3;
+}
+
+message StartSessionResponse {
+  Session session = 1;
+}
+
+message StopSessionRequest {
+  string session_id = 1;
+}
+
+enum PresenceSource {
+  PRESENCE_SOURCE_UNSPECIFIED = 0;
+  PRESENCE_SOURCE_LOCAL = 1;
+  PRESENCE_SOURCE_REMOTE = 2;
+}
+
+// Lets each side show "typing on the other device" to avoid interleaved input.
+message Presence {
+  string session_id = 1;
+  PresenceSource source = 2;
+  bool typing = 3;
+}
