@@ -1,13 +1,15 @@
 package dev.ddgrcf.sidekick.ui
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.annotation.OptIn
 import androidx.camera.core.CameraSelector
-import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
@@ -15,6 +17,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
@@ -30,6 +33,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.QrCodeScanner
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -73,49 +77,97 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.google.mlkit.vision.barcode.BarcodeScanning
-import com.google.mlkit.vision.common.InputImage
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.BinaryBitmap
+import com.google.zxing.DecodeHintType
+import com.google.zxing.MultiFormatReader
+import com.google.zxing.PlanarYUVLuminanceSource
+import com.google.zxing.common.HybridBinarizer
 import dev.ddgrcf.sidekick.ui.theme.SidekickThemeExtras
 import dev.ddgrcf.sidekick.vm.PairViewModel
 import java.util.concurrent.Executors
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PairScreen(
     vm: PairViewModel,
     onBack: () -> Unit,
     onPaired: () -> Unit,
 ) {
-    val context = LocalContext.current
     val status by vm.status.collectAsStateWithLifecycle()
     val isError by vm.isError.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val paired by vm.pairedSuccess.collectAsStateWithLifecycle()
 
-    var hasCameraPerm by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED,
-        )
+    LaunchedEffect(paired) {
+        if (paired) onPaired()
     }
-    var manualMode by rememberSaveable { mutableStateOf(!hasCameraPerm) }
+
+    PairContent(
+        status = status,
+        isError = isError,
+        busy = busy,
+        paired = paired,
+        onBack = onBack,
+        onPairQrJson = vm::pairWithQrJson,
+        onPairManualCode = vm::pairWithManualCode,
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PairContent(
+    status: String?,
+    isError: Boolean,
+    busy: Boolean,
+    paired: Boolean,
+    onBack: () -> Unit,
+    onPairQrJson: (String) -> Unit,
+    onPairManualCode: (String, String) -> Unit,
+    isDemo: Boolean = false,
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    fun checkCamPerm(): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+
+    var hasCameraPerm by remember { mutableStateOf(checkCamPerm()) }
+    var manualMode by rememberSaveable { mutableStateOf(false) }
     var userCode by rememberSaveable { mutableStateOf("") }
     var pskText by rememberSaveable { mutableStateOf("") }
+    var cameraError by remember { mutableStateOf<String?>(null) }
 
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         hasCameraPerm = granted
-        manualMode = !granted
+        if (!granted) {
+            manualMode = true
+        }
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val granted = checkCamPerm()
+                if (granted && !hasCameraPerm) {
+                    hasCameraPerm = true
+                    manualMode = false
+                } else {
+                    hasCameraPerm = granted
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     LaunchedEffect(Unit) {
         if (!hasCameraPerm) {
             permLauncher.launch(Manifest.permission.CAMERA)
         }
-    }
-
-    LaunchedEffect(paired) {
-        if (paired) onPaired()
     }
 
     Scaffold(
@@ -125,7 +177,15 @@ fun PairScreen(
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background,
                 ),
-                title = { Text("添加电脑") },
+                title = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text("添加电脑")
+                        if (isDemo) DemoTag()
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回")
@@ -177,8 +237,9 @@ fun PairScreen(
                     QrScannerView(
                         canScan = !busy && !paired,
                         onDetected = { raw ->
-                            if (!busy) vm.pairWithQrJson(raw)
+                            if (!busy) onPairQrJson(raw)
                         },
+                        onCameraError = { err -> cameraError = err },
                     )
                     ScannerOverlay(
                         accentColor = MaterialTheme.colorScheme.primary,
@@ -186,18 +247,22 @@ fun PairScreen(
                     )
                     Surface(
                         shape = RoundedCornerShape(999.dp),
-                        color = Color.Black.copy(alpha = 0.55f),
+                        color = Color.Black.copy(alpha = 0.6f),
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .padding(bottom = 14.dp),
                     ) {
                         Text(
-                            text = "对准终端中的配对二维码",
+                            text = "对准终端中的配对二维码（支持深色/亮色终端）",
                             style = MaterialTheme.typography.labelMedium,
                             color = Color.White,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                         )
                     }
+                }
+
+                if (!cameraError.isNullOrBlank()) {
+                    ErrorBanner(cameraError!!)
                 }
 
                 Column(
@@ -237,7 +302,7 @@ fun PairScreen(
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Button(
-                        onClick = { vm.pairWithManualCode(userCode, pskText) },
+                        onClick = { onPairManualCode(userCode, pskText) },
                         enabled = !busy && userCode.isNotBlank(),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
@@ -274,12 +339,33 @@ fun PairScreen(
                         ) {
                             Text("授予相机权限扫码")
                         }
+                        OutlinedButton(
+                            onClick = {
+                                val intent = Intent(
+                                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                    Uri.fromParts("package", context.packageName, null),
+                                )
+                                runCatching { context.startActivity(intent) }
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 48.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Settings,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.size(6.dp))
+                            Text("去系统设置开启相机权限")
+                        }
                     }
                 }
             }
 
             if (!status.isNullOrBlank()) {
-                val msg = status!!
+                val msg = status
                 val extras = SidekickThemeExtras.colors
                 if (isError) {
                     ErrorBanner(msg)
@@ -346,65 +432,118 @@ private fun ScannerOverlay(
     }
 }
 
-@OptIn(ExperimentalGetImage::class)
 @Composable
 private fun QrScannerView(
     canScan: Boolean,
     onDetected: (String) -> Unit,
+    onCameraError: (String?) -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val executor = remember { Executors.newSingleThreadExecutor() }
-    val scanner = remember { BarcodeScanning.getClient() }
+    val zxingReader = remember {
+        MultiFormatReader().apply {
+            setHints(
+                mapOf(
+                    DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
+                    DecodeHintType.TRY_HARDER to true,
+                ),
+            )
+        }
+    }
     val currentCanScan by rememberUpdatedState(canScan)
     val currentOnDetected by rememberUpdatedState(onDetected)
+    val currentOnCameraError by rememberUpdatedState(onCameraError)
     var lastScanMs by remember { mutableLongStateOf(0L) }
 
     DisposableEffect(Unit) {
         onDispose {
             executor.shutdown()
-            scanner.close()
         }
     }
 
     AndroidView(
         modifier = Modifier.fillMaxSize(),
         factory = { ctx ->
-            val previewView = PreviewView(ctx)
+            val previewView = PreviewView(ctx).apply {
+                // COMPATIBLE (TextureView) avoids blank/cutout SurfaceView compositing under rounded clips & overlays.
+                implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+                scaleType = PreviewView.ScaleType.FILL_CENTER
+            }
             val providerFuture = ProcessCameraProvider.getInstance(ctx)
             providerFuture.addListener({
-                val provider = providerFuture.get()
-                val preview = Preview.Builder().build().also {
-                    it.surfaceProvider = previewView.surfaceProvider
-                }
-                val analysis = ImageAnalysis.Builder()
-                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .build()
-                analysis.setAnalyzer(executor) { imageProxy ->
-                    val mediaImage = imageProxy.image
-                    val now = System.currentTimeMillis()
-                    if (mediaImage != null && currentCanScan && now - lastScanMs > 2000L) {
-                        val img = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
-                        scanner.process(img)
-                            .addOnSuccessListener { barcodes ->
-                                val raw = barcodes.firstOrNull()?.rawValue
+                runCatching {
+                    val provider = providerFuture.get()
+                    val preview = Preview.Builder().build().also {
+                        it.surfaceProvider = previewView.surfaceProvider
+                    }
+                    val analysis = ImageAnalysis.Builder()
+                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                        .build()
+                    analysis.setAnalyzer(executor) { imageProxy ->
+                        try {
+                            val now = System.currentTimeMillis()
+                            if (currentCanScan && now - lastScanMs > 2000L) {
+                                val decoded = decodeQrFromYuvPlane(imageProxy, zxingReader)
                                 val ts = System.currentTimeMillis()
-                                if (!raw.isNullOrBlank() && currentCanScan && ts - lastScanMs > 2000L) {
+                                if (!decoded.isNullOrBlank() && currentCanScan && ts - lastScanMs > 2000L) {
                                     lastScanMs = ts
-                                    currentOnDetected(raw)
+                                    ContextCompat.getMainExecutor(ctx).execute {
+                                        currentOnDetected(decoded)
+                                    }
                                 }
                             }
-                            .addOnCompleteListener { imageProxy.close() }
-                    } else {
-                        imageProxy.close()
+                        } finally {
+                            imageProxy.close()
+                        }
                     }
-                }
-                runCatching {
                     provider.unbindAll()
                     provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+                    currentOnCameraError(null)
+                }.onFailure { e ->
+                    currentOnCameraError("相机初始化失败: ${e.message ?: "请检查相机权限或设备支持"}")
                 }
             }, ContextCompat.getMainExecutor(ctx))
             previewView
         },
     )
+}
+
+private fun decodeQrFromYuvPlane(imageProxy: ImageProxy, reader: MultiFormatReader): String? {
+    val plane = imageProxy.planes.firstOrNull() ?: return null
+    val w = imageProxy.width
+    val h = imageProxy.height
+    if (w <= 0 || h <= 0) return null
+
+    val buf = plane.buffer
+    val rowStride = plane.rowStride
+    val pixelStride = plane.pixelStride
+    val yData = ByteArray(w * h)
+    if (pixelStride == 1 && rowStride == w) {
+        buf.rewind()
+        buf.get(yData, 0, yData.size)
+    } else {
+        val rowBuf = ByteArray(rowStride)
+        for (row in 0 until h) {
+            buf.position(row * rowStride)
+            val toRead = minOf(rowStride, buf.remaining())
+            buf.get(rowBuf, 0, toRead)
+            var outIdx = row * w
+            var inIdx = 0
+            for (col in 0 until w) {
+                yData[outIdx++] = rowBuf[inIdx]
+                inIdx += pixelStride
+            }
+        }
+    }
+
+    val source = PlanarYUVLuminanceSource(yData, w, h, 0, 0, w, h, false)
+    val candidates = arrayOf(source, source.invert())
+    for (src in candidates) {
+        val bitmap = BinaryBitmap(HybridBinarizer(src))
+        val text = runCatching { reader.decodeWithState(bitmap)?.text }.getOrNull()
+        if (!text.isNullOrBlank()) return text
+        reader.reset()
+    }
+    return null
 }

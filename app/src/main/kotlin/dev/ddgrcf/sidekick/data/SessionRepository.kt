@@ -9,6 +9,7 @@ import dev.ddgrcf.sidekick.core.store.HistoryEntity
 import dev.ddgrcf.sidekick.core.store.MessageEntity
 import dev.ddgrcf.sidekick.core.store.SessionEntity
 import dev.ddgrcf.sidekick.core.store.SidekickDatabase
+import dev.ddgrcf.sidekick.proto.v1.FileEntry
 import dev.ddgrcf.sidekick.proto.v1.Frame
 import dev.ddgrcf.sidekick.proto.v1.GetMediaRequest
 import dev.ddgrcf.sidekick.proto.v1.GetMessagesRequest
@@ -17,12 +18,15 @@ import dev.ddgrcf.sidekick.proto.v1.HistoryEntry
 import dev.ddgrcf.sidekick.proto.v1.InputRequest
 import dev.ddgrcf.sidekick.proto.v1.Key
 import dev.ddgrcf.sidekick.proto.v1.KeysRequest
+import dev.ddgrcf.sidekick.proto.v1.ListCommandsRequest
+import dev.ddgrcf.sidekick.proto.v1.ListFilesRequest
 import dev.ddgrcf.sidekick.proto.v1.ListHistoryRequest
 import dev.ddgrcf.sidekick.proto.v1.ListSessionsRequest
 import dev.ddgrcf.sidekick.proto.v1.Message
 import dev.ddgrcf.sidekick.proto.v1.Presence
 import dev.ddgrcf.sidekick.proto.v1.PresenceSource
 import dev.ddgrcf.sidekick.proto.v1.Session
+import dev.ddgrcf.sidekick.proto.v1.SlashCommand
 import dev.ddgrcf.sidekick.proto.v1.StartSessionRequest
 import dev.ddgrcf.sidekick.proto.v1.StopSessionRequest
 import dev.ddgrcf.sidekick.proto.v1.Stream
@@ -244,6 +248,26 @@ class SessionRepository @Inject constructor(
             Frame(id = id, stop_session = StopSessionRequest(session_id = sid))
         }
         markSessionClosed(bridgeId, sid)
+    }
+
+    suspend fun listFiles(bridgeId: String, sid: String, query: String, limit: Int = 50): List<FileEntry> {
+        val resp = socketManager.request(bridgeId) { id ->
+            Frame(
+                id = id,
+                list_files = ListFilesRequest(session_id = sid, query = query, limit = limit),
+            )
+        }
+        return resp.files?.files ?: emptyList()
+    }
+
+    suspend fun listCommands(bridgeId: String, sid: String, tool: String): List<SlashCommand> {
+        val resp = socketManager.request(bridgeId) { id ->
+            Frame(
+                id = id,
+                list_commands = ListCommandsRequest(session_id = sid, tool = tool),
+            )
+        }
+        return resp.commands?.commands ?: emptyList()
     }
 
     suspend fun fetchMedia(bridgeId: String, mediaId: String, mimeType: String, filename: String): File =

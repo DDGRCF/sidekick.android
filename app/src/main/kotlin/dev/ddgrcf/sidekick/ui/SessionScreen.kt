@@ -10,11 +10,20 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.horizontalScroll
@@ -22,10 +31,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -34,44 +46,56 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.WrapText
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AlternateEmail
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.AudioFile
 import androidx.compose.material.icons.rounded.Build
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ContentPaste
+import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.FormatQuote
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.MoreVert
-import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.StopCircle
 import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material.icons.rounded.TextDecrease
 import androidx.compose.material.icons.rounded.TextIncrease
 import androidx.compose.material.icons.rounded.Videocam
@@ -85,26 +109,23 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -124,26 +145,50 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.ddgrcf.sidekick.core.ansi.AnsiLine
 import dev.ddgrcf.sidekick.core.relay.ConnectionState
@@ -153,8 +198,13 @@ import dev.ddgrcf.sidekick.proto.v1.Key
 import dev.ddgrcf.sidekick.ui.theme.SidekickThemeExtras
 import dev.ddgrcf.sidekick.vm.MediaKind
 import dev.ddgrcf.sidekick.vm.PendingAttachment
+import dev.ddgrcf.sidekick.vm.QuotedMessage
 import dev.ddgrcf.sidekick.vm.SessionViewModel
+import dev.ddgrcf.sidekick.vm.SlashCommandSuggestion
+import dev.ddgrcf.sidekick.vm.WorkspaceFileSuggestion
+import dev.ddgrcf.sidekick.vm.coreBuiltinSlashCommands
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -185,6 +235,8 @@ fun SessionScreen(
     val pendingAttachments by vm.pendingAttachments.collectAsStateWithLifecycle()
     val fetchedMediaPaths by vm.fetchedMediaPaths.collectAsStateWithLifecycle()
     val loadingMediaIds by vm.loadingMediaIds.collectAsStateWithLifecycle()
+    val fileSuggestions by vm.fileSuggestions.collectAsStateWithLifecycle()
+    val slashCommands by vm.slashCommands.collectAsStateWithLifecycle()
     val toast by vm.toast.collectAsStateWithLifecycle()
 
     SessionContent(
@@ -201,12 +253,15 @@ fun SessionScreen(
         pendingAttachments = pendingAttachments,
         fetchedMediaPaths = fetchedMediaPaths,
         loadingMediaIds = loadingMediaIds,
+        fileSuggestions = fileSuggestions,
+        slashCommands = slashCommands,
         toast = toast,
         onClearToast = vm::clearToast,
         onBack = onBack,
         onSendInput = vm::sendWithAttachments,
         onSendKey = vm::sendKey,
         onFocusChanged = vm::onFocusChanged,
+        onSearchFiles = vm::searchWorkspaceFiles,
         onAddAttachment = vm::addAttachment,
         onRemoveAttachment = vm::removeAttachment,
         onRefreshMessages = vm::refreshMessages,
@@ -215,7 +270,7 @@ fun SessionScreen(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SessionContent(
     title: String,
@@ -238,6 +293,9 @@ fun SessionContent(
     pendingAttachments: List<PendingAttachment> = emptyList(),
     fetchedMediaPaths: Map<String, String> = emptyMap(),
     loadingMediaIds: Set<String> = emptySet(),
+    fileSuggestions: List<WorkspaceFileSuggestion> = emptyList(),
+    slashCommands: List<SlashCommandSuggestion> = remember(tool) { coreBuiltinSlashCommands(tool) },
+    onSearchFiles: (String) -> Unit = {},
     onAddAttachment: (PendingAttachment) -> Unit = {},
     onRemoveAttachment: (String) -> Unit = {},
     onRefreshMessages: () -> Unit = {},
@@ -245,15 +303,26 @@ fun SessionContent(
     onRequestMedia: (UiPart.Media) -> Unit = {},
 ) {
     var tabIdx by rememberSaveable(structuredHistory) { mutableIntStateOf(0) }
+    var terminalFontSizeSp by rememberSaveable { mutableIntStateOf(12) }
+    var terminalSoftWrap by rememberSaveable { mutableStateOf(true) }
+    var headerExpanded by rememberSaveable { mutableStateOf(true) }
+    var headerPinned by rememberSaveable { mutableStateOf(false) }
+    var peekTrigger by rememberSaveable { mutableIntStateOf(0) }
     var showOverflow by remember { mutableStateOf(false) }
     var confirmStop by rememberSaveable { mutableStateOf(false) }
-    val lightboxJson = remember { Json { ignoreUnknownKeys = true } }
+    val stateJson = remember { Json { ignoreUnknownKeys = true } }
     var lightboxMedia by rememberSaveable(
         stateSaver = Saver<UiPart.Media?, String>(
-            save = { m -> m?.let { lightboxJson.encodeToString(it) } ?: "" },
-            restore = { raw -> if (raw.isBlank()) null else runCatching { lightboxJson.decodeFromString<UiPart.Media>(raw) }.getOrNull() },
+            save = { m -> m?.let { stateJson.encodeToString(it) } ?: "" },
+            restore = { raw -> if (raw.isBlank()) null else runCatching { stateJson.decodeFromString<UiPart.Media>(raw) }.getOrNull() },
         ),
     ) { mutableStateOf<UiPart.Media?>(null) }
+    var quotedMessage by rememberSaveable(
+        stateSaver = Saver<QuotedMessage?, String>(
+            save = { q -> q?.let { stateJson.encodeToString(it) } ?: "" },
+            restore = { raw -> if (raw.isBlank()) null else runCatching { stateJson.decodeFromString<QuotedMessage>(raw) }.getOrNull() },
+        ),
+    ) { mutableStateOf<QuotedMessage?>(null) }
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -271,109 +340,157 @@ fun SessionContent(
         }
     }
 
+    val isTerminalTab = !structuredHistory || tabIdx == 1
+    val imeVisible = WindowInsets.isImeVisible
+    val connectionAttention = connectionState != ConnectionState.CONNECTED
+    val showExpandedHeader = headerExpanded || headerPinned || connectionAttention
+
+    LaunchedEffect(peekTrigger, headerExpanded, headerPinned, connectionAttention) {
+        if (headerExpanded && !headerPinned && !connectionAttention) {
+            delay(2400L)
+            headerExpanded = false
+        }
+    }
+
+    LaunchedEffect(imeVisible) {
+        if (imeVisible && !headerPinned && !connectionAttention) {
+            headerExpanded = false
+        }
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                headerExpanded = true
+                peekTrigger++
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val density = LocalDensity.current
+    val showThresholdPx = with(density) { 18.dp.toPx() }
+    val hideThresholdPx = with(density) { 14.dp.toPx() }
+    val headerNestedScroll = remember(showThresholdPx, hideThresholdPx, connectionAttention) {
+        var upAccum = 0f
+        var downAccum = 0f
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (source == NestedScrollSource.UserInput) {
+                    val dy = available.y
+                    if (dy > 0f) {
+                        upAccum += dy
+                        downAccum = 0f
+                        if (upAccum > showThresholdPx) {
+                            upAccum = 0f
+                            headerExpanded = true
+                            peekTrigger++
+                        }
+                    } else if (dy < 0f) {
+                        downAccum += -dy
+                        upAccum = 0f
+                        if (downAccum > hideThresholdPx && !headerPinned && !connectionAttention) {
+                            downAccum = 0f
+                            headerExpanded = false
+                        }
+                    }
+                }
+                return Offset.Zero
+            }
+        }
+    }
+
+    fun selectTab(nextIdx: Int) {
+        if (tabIdx != nextIdx) {
+            tabIdx = nextIdx
+            headerExpanded = true
+            peekTrigger++
+        }
+    }
+
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    var dismissSignal by rememberSaveable { mutableIntStateOf(0) }
+
+    fun dismissConversationChrome() {
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
+        dismissSignal++
+        if (headerPinned || headerExpanded) {
+            headerPinned = false
+            if (!connectionAttention) {
+                headerExpanded = false
+            }
+        }
+    }
+
+    fun copyTerminalScreen() {
+        val plain = terminalPlainText(screenLines)
+        if (plain.isNotBlank()) {
+            clipboard.setText(AnnotatedString(plain))
+            notify("已复制终端屏幕")
+        }
+    }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                ),
-                title = {
-                    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                        Text(
-                            text = title,
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            ConnectionStatusPill(connectionState, compact = true)
-                            Text(
-                                text = buildString {
-                                    append(ToolVisuals.label(tool))
-                                    if (sessionId.isNotBlank()) {
-                                        append(" · ")
-                                        append(sessionId.take(14))
-                                    }
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            if (isDemo) {
-                                DemoTag()
-                            }
-                        }
+            SessionAdaptiveHeader(
+                title = title,
+                tool = tool,
+                sessionId = sessionId,
+                structuredHistory = structuredHistory,
+                tabIdx = tabIdx,
+                connectionState = connectionState,
+                isDemo = isDemo,
+                expanded = showExpandedHeader,
+                showOverflow = showOverflow,
+                isTerminalTab = isTerminalTab,
+                terminalLineCount = screenLines.size,
+                terminalFontSizeSp = terminalFontSizeSp,
+                terminalSoftWrap = terminalSoftWrap,
+                onToggleExpanded = {
+                    if (showExpandedHeader) {
+                        headerPinned = false
+                        headerExpanded = false
+                    } else {
+                        headerPinned = true
+                        headerExpanded = true
                     }
                 },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回")
-                    }
+                onSelectTab = ::selectTab,
+                onBack = onBack,
+                onOpenOverflow = { showOverflow = true },
+                onDismissOverflow = { showOverflow = false },
+                onRefreshMessages = onRefreshMessages,
+                onCopySessionId = {
+                    clipboard.setText(AnnotatedString(sessionId))
+                    notify("已复制会话 ID")
                 },
-                actions = {
-                    Box {
-                        IconButton(onClick = { showOverflow = true }) {
-                            Icon(Icons.Rounded.MoreVert, contentDescription = "更多操作")
-                        }
-                        DropdownMenu(
-                            expanded = showOverflow,
-                            onDismissRequest = { showOverflow = false },
-                        ) {
-                            if (structuredHistory) {
-                                DropdownMenuItem(
-                                    text = { Text("同步消息历史") },
-                                    leadingIcon = { Icon(Icons.Rounded.Sync, contentDescription = null) },
-                                    onClick = {
-                                        showOverflow = false
-                                        onRefreshMessages()
-                                    },
-                                )
-                            }
-                            if (sessionId.isNotBlank()) {
-                                DropdownMenuItem(
-                                    text = { Text("复制会话 ID") },
-                                    leadingIcon = { Icon(Icons.Rounded.ContentCopy, contentDescription = null) },
-                                    onClick = {
-                                        showOverflow = false
-                                        clipboard.setText(AnnotatedString(sessionId))
-                                        notify("已复制会话 ID")
-                                    },
-                                )
-                            }
-                            if (structuredHistory || sessionId.isNotBlank()) {
-                                HairlineDivider()
-                            }
-                            DropdownMenuItem(
-                                text = { Text("停止会话", color = MaterialTheme.colorScheme.error) },
-                                leadingIcon = {
-                                    Icon(
-                                        Icons.Rounded.StopCircle,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.error,
-                                    )
-                                },
-                                onClick = {
-                                    showOverflow = false
-                                    confirmStop = true
-                                },
-                            )
-                        }
-                    }
+                onTerminalFontDelta = { delta ->
+                    terminalFontSizeSp = (terminalFontSizeSp + delta).coerceIn(10, 16)
                 },
+                onToggleTerminalWrap = { terminalSoftWrap = !terminalSoftWrap },
+                onCopyTerminalScreen = ::copyTerminalScreen,
+                onRequestStopSession = { confirmStop = true },
             )
         },
         bottomBar = {
             SessionComposer(
                 tool = tool,
                 localTyping = localTyping,
-                defaultShowKeycaps = !structuredHistory || tabIdx == 1,
+                defaultShowKeycaps = isTerminalTab,
+                dismissSignal = dismissSignal,
                 pendingAttachments = pendingAttachments,
+                quotedMessage = quotedMessage,
+                fileSuggestions = fileSuggestions,
+                slashCommands = slashCommands,
+                screenLines = screenLines,
+                onSearchFiles = onSearchFiles,
+                onClearQuote = { quotedMessage = null },
                 onAddAttachment = onAddAttachment,
                 onRemoveAttachment = onRemoveAttachment,
                 onSendInput = onSendInput,
@@ -382,46 +499,73 @@ fun SessionContent(
             )
         },
     ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
-            if (structuredHistory) {
-                PrimaryTabRow(
-                    selectedTabIndex = tabIdx,
-                    containerColor = MaterialTheme.colorScheme.background,
-                    divider = { HairlineDivider() },
-                ) {
-                    Tab(selected = tabIdx == 0, onClick = { tabIdx = 0 }, text = { Text("Chat") })
-                    Tab(selected = tabIdx == 1, onClick = { tabIdx = 1 }, text = { Text("Terminal") })
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding),
+        ) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .testTag("session_canvas")
+                    .nestedScroll(headerNestedScroll)
+                    .pointerInput(Unit) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                            val slop = viewConfiguration.touchSlop
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Final)
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) {
+                                    val dist = (change.position - down.position).getDistance()
+                                    val elapsed = change.uptimeMillis - down.uptimeMillis
+                                    if (!change.isConsumed &&
+                                        dist <= slop &&
+                                        elapsed < viewConfiguration.longPressTimeoutMillis
+                                    ) {
+                                        dismissConversationChrome()
+                                    }
+                                    break
+                                }
+                                if ((change.position - down.position).getDistance() > slop) {
+                                    break
+                                }
+                            }
+                        }
+                    },
+            ) {
+                if (structuredHistory && tabIdx == 0) {
+                    ChatView(
+                        tool = tool,
+                        messages = messages,
+                        decodeParts = decodeParts,
+                        fetchedMediaPaths = fetchedMediaPaths,
+                        onCopyText = { txt, label ->
+                            clipboard.setText(AnnotatedString(txt))
+                            notify("已复制$label")
+                        },
+                        onQuoteMessage = { author, excerpt ->
+                            quotedMessage = QuotedMessage(author, excerpt)
+                        },
+                        onAutoFetchMedia = onRequestMedia,
+                        onOpenImage = { media ->
+                            onRequestMedia(media)
+                            lightboxMedia = media
+                        },
+                        onUnsupportedMediaClick = { notify("音视频播放将在后续版本支持") },
+                        onSwitchToTerminal = { selectTab(1) },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    TerminalView(
+                        lines = screenLines,
+                        revision = screenRevision,
+                        fontSizeSp = terminalFontSizeSp,
+                        softWrap = terminalSoftWrap,
+                        modifier = Modifier.fillMaxSize(),
+                    )
                 }
-            }
-            if (structuredHistory && tabIdx == 0) {
-                ChatView(
-                    tool = tool,
-                    messages = messages,
-                    decodeParts = decodeParts,
-                    fetchedMediaPaths = fetchedMediaPaths,
-                    onCopyText = { txt, label ->
-                        clipboard.setText(AnnotatedString(txt))
-                        notify("已复制$label")
-                    },
-                    onAutoFetchMedia = onRequestMedia,
-                    onOpenImage = { media ->
-                        onRequestMedia(media)
-                        lightboxMedia = media
-                    },
-                    onUnsupportedMediaClick = { notify("音视频播放将在后续版本支持") },
-                    onSwitchToTerminal = { tabIdx = 1 },
-                    modifier = Modifier.weight(1f),
-                )
-            } else {
-                TerminalView(
-                    lines = screenLines,
-                    revision = screenRevision,
-                    onCopyScreen = { txt ->
-                        clipboard.setText(AnnotatedString(txt))
-                        notify("已复制终端屏幕")
-                    },
-                    modifier = Modifier.weight(1f),
-                )
             }
         }
     }
@@ -458,12 +602,346 @@ fun SessionContent(
 }
 
 @Composable
+private fun SessionAdaptiveHeader(
+    title: String,
+    tool: String,
+    sessionId: String,
+    structuredHistory: Boolean,
+    tabIdx: Int,
+    connectionState: ConnectionState,
+    isDemo: Boolean,
+    expanded: Boolean,
+    showOverflow: Boolean,
+    isTerminalTab: Boolean,
+    terminalLineCount: Int,
+    terminalFontSizeSp: Int,
+    terminalSoftWrap: Boolean,
+    onToggleExpanded: () -> Unit,
+    onSelectTab: (Int) -> Unit,
+    onBack: () -> Unit,
+    onOpenOverflow: () -> Unit,
+    onDismissOverflow: () -> Unit,
+    onRefreshMessages: () -> Unit,
+    onCopySessionId: () -> Unit,
+    onTerminalFontDelta: (Int) -> Unit,
+    onToggleTerminalWrap: () -> Unit,
+    onCopyTerminalScreen: () -> Unit,
+    onRequestStopSession: () -> Unit,
+) {
+    val largeFontMode = LocalDensity.current.fontScale >= 1.45f
+
+    Surface(
+        color = MaterialTheme.colorScheme.background,
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding(),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = 52.dp)
+                    .padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回")
+                }
+
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .defaultMinSize(minHeight = 48.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(
+                            onClickLabel = if (expanded) "收起标题详情" else "展开完整标题",
+                            onClick = onToggleExpanded,
+                        )
+                        .semantics(mergeDescendants = true) {
+                            stateDescription = if (expanded) "已展开会话标题" else "已收起会话标题"
+                        }
+                        .padding(horizontal = 8.dp),
+                    contentAlignment = Alignment.CenterStart,
+                ) {
+                    Text(
+                        text = ToolVisuals.label(tool),
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onBackground,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+
+                if (structuredHistory && !largeFontMode) {
+                    SessionViewTabs(
+                        selectedIndex = tabIdx,
+                        onSelectTab = onSelectTab,
+                    )
+                }
+
+                Box {
+                    IconButton(onClick = onOpenOverflow) {
+                        Icon(Icons.Rounded.MoreVert, contentDescription = "更多操作")
+                    }
+                    DropdownMenu(
+                        expanded = showOverflow,
+                        onDismissRequest = onDismissOverflow,
+                    ) {
+                        if (structuredHistory) {
+                            DropdownMenuItem(
+                                text = { Text("同步消息历史") },
+                                leadingIcon = { Icon(Icons.Rounded.Sync, contentDescription = null) },
+                                onClick = {
+                                    onDismissOverflow()
+                                    onRefreshMessages()
+                                },
+                            )
+                        }
+                        if (isTerminalTab) {
+                            DropdownMenuItem(
+                                text = { Text("增大终端字号 (${terminalFontSizeSp}sp)") },
+                                leadingIcon = { Icon(Icons.Rounded.TextIncrease, contentDescription = null) },
+                                enabled = terminalFontSizeSp < 16,
+                                onClick = {
+                                    onDismissOverflow()
+                                    onTerminalFontDelta(1)
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("减小终端字号 (${terminalFontSizeSp}sp)") },
+                                leadingIcon = { Icon(Icons.Rounded.TextDecrease, contentDescription = null) },
+                                enabled = terminalFontSizeSp > 10,
+                                onClick = {
+                                    onDismissOverflow()
+                                    onTerminalFontDelta(-1)
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (terminalSoftWrap) "关闭自动换行" else "开启自动换行") },
+                                leadingIcon = { Icon(Icons.AutoMirrored.Rounded.WrapText, contentDescription = null) },
+                                onClick = {
+                                    onDismissOverflow()
+                                    onToggleTerminalWrap()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("复制终端屏幕") },
+                                leadingIcon = { Icon(Icons.Rounded.ContentCopy, contentDescription = null) },
+                                onClick = {
+                                    onDismissOverflow()
+                                    onCopyTerminalScreen()
+                                },
+                            )
+                        }
+                        if (sessionId.isNotBlank()) {
+                            DropdownMenuItem(
+                                text = { Text("复制会话 ID") },
+                                leadingIcon = { Icon(Icons.Rounded.ContentCopy, contentDescription = null) },
+                                onClick = {
+                                    onDismissOverflow()
+                                    onCopySessionId()
+                                },
+                            )
+                        }
+                        if (structuredHistory || isTerminalTab || sessionId.isNotBlank()) {
+                            HairlineDivider()
+                        }
+                        DropdownMenuItem(
+                            text = { Text("停止会话", color = MaterialTheme.colorScheme.error) },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Rounded.StopCircle,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error,
+                                )
+                            },
+                            onClick = {
+                                onDismissOverflow()
+                                onRequestStopSession()
+                            },
+                        )
+                    }
+                }
+            }
+
+            if (structuredHistory && largeFontMode) {
+                SessionViewTabs(
+                    selectedIndex = tabIdx,
+                    onSelectTab = onSelectTab,
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                )
+            }
+
+            AnimatedVisibility(
+                visible = expanded,
+                enter = expandVertically(tween(200)) + fadeIn(tween(160)),
+                exit = shrinkVertically(tween(180)) + fadeOut(tween(140)),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = title.ifBlank { ToolVisuals.label(tool) },
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onBackground,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    FlowRow(
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        itemVerticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        ConnectionStatusPill(connectionState, compact = false)
+                        if (sessionId.isNotBlank()) {
+                            Text(
+                                text = sessionId.take(14),
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        if (isTerminalTab) {
+                            Text(
+                                text = "ANSI · $terminalLineCount 行",
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        if (isDemo) {
+                            DemoTag()
+                        }
+                    }
+                }
+            }
+
+            HairlineDivider()
+        }
+    }
+}
+
+@Composable
+private fun SessionViewTabs(
+    selectedIndex: Int,
+    onSelectTab: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val density = LocalDensity.current
+    val tabCentersPx = remember { mutableStateMapOf<Int, Float>() }
+    val indicatorCenterPx = remember { Animatable(0f) }
+    var indicatorInitialized by remember { mutableStateOf(false) }
+
+    val targetCenter = tabCentersPx[selectedIndex]
+    LaunchedEffect(selectedIndex, targetCenter) {
+        if (targetCenter != null) {
+            if (!indicatorInitialized) {
+                indicatorCenterPx.snapTo(targetCenter)
+                indicatorInitialized = true
+            } else {
+                indicatorCenterPx.animateTo(
+                    targetValue = targetCenter,
+                    animationSpec = tween(220, easing = FastOutSlowInEasing),
+                )
+            }
+        }
+    }
+
+    val indicatorWidthPx = with(density) { 20.dp.toPx() }
+    Box(modifier = modifier) {
+        Row(
+            modifier = Modifier.selectableGroup(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            listOf("Chat", "Terminal").forEachIndexed { idx, label ->
+                val isSelected = selectedIndex == idx
+                Box(
+                    modifier = Modifier
+                        .onGloballyPositioned { coords ->
+                            tabCentersPx[idx] = coords.positionInParent().x + coords.size.width / 2f
+                        }
+                        .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .selectable(
+                            selected = isSelected,
+                            role = Role.Tab,
+                            onClick = { onSelectTab(idx) },
+                        )
+                        .padding(horizontal = 8.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                        ),
+                        color = if (isSelected) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
+            }
+        }
+        if (indicatorInitialized) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .offset {
+                        IntOffset((indicatorCenterPx.value - indicatorWidthPx / 2f).roundToInt(), 0)
+                    }
+                    .width(20.dp)
+                    .height(2.5.dp)
+                    .background(MaterialTheme.colorScheme.primary, CircleShape),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ScrollToBottomButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val extras = SidekickThemeExtras.colors
+    Box(
+        modifier = modifier
+            .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            onClick = onClick,
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            shadowElevation = 1.dp,
+            border = BorderStroke(0.5.dp, extras.hairline),
+            modifier = Modifier.size(40.dp),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = Icons.Rounded.ArrowDownward,
+                    contentDescription = "回到底部",
+                    modifier = Modifier.size(19.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun ChatView(
     tool: String,
     messages: List<MessageEntity>,
     decodeParts: (String) -> List<UiPart>,
     fetchedMediaPaths: Map<String, String>,
     onCopyText: (String, String) -> Unit,
+    onQuoteMessage: (String, String) -> Unit,
     onAutoFetchMedia: (UiPart.Media) -> Unit,
     onOpenImage: (UiPart.Media) -> Unit,
     onUnsupportedMediaClick: () -> Unit,
@@ -481,7 +959,7 @@ private fun ChatView(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                ToolIcon(tool = tool, size = 36.dp)
+                ToolIcon(tool = tool, size = 36.dp, contentDescription = null)
                 Spacer(Modifier.height(2.dp))
                 Text(
                     text = "已连接到 ${ToolVisuals.label(tool)} 会话",
@@ -529,47 +1007,46 @@ private fun ChatView(
             modifier = Modifier
                 .fillMaxSize()
                 .testTag("chat_list"),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(22.dp),
         ) {
             items(messages, key = { it.seq }) { msg ->
                 val parts = remember(msg.partsJson) { decodeParts(msg.partsJson) }
                 val isUser = msg.role.contains("USER", ignoreCase = true)
-                if (isUser) {
-                    UserPromptTurn(
-                        parts = parts,
-                        fetchedMediaPaths = fetchedMediaPaths,
-                        onAutoFetchMedia = onAutoFetchMedia,
-                        onOpenImage = onOpenImage,
-                        onUnsupportedMediaClick = onUnsupportedMediaClick,
-                    )
-                } else {
-                    AssistantTurn(
-                        tool = tool,
-                        model = msg.model,
-                        parts = parts,
-                        fetchedMediaPaths = fetchedMediaPaths,
-                        onCopyText = onCopyText,
-                        onAutoFetchMedia = onAutoFetchMedia,
-                        onOpenImage = onOpenImage,
-                        onUnsupportedMediaClick = onUnsupportedMediaClick,
-                    )
+                Box(modifier = Modifier.animateItem()) {
+                    if (isUser) {
+                        UserPromptTurn(
+                            parts = parts,
+                            fetchedMediaPaths = fetchedMediaPaths,
+                            onQuote = { excerpt -> onQuoteMessage("你", excerpt) },
+                            onAutoFetchMedia = onAutoFetchMedia,
+                            onOpenImage = onOpenImage,
+                            onUnsupportedMediaClick = onUnsupportedMediaClick,
+                        )
+                    } else {
+                        AssistantTurn(
+                            tool = tool,
+                            model = msg.model,
+                            parts = parts,
+                            fetchedMediaPaths = fetchedMediaPaths,
+                            onCopyText = onCopyText,
+                            onQuote = { author, excerpt -> onQuoteMessage(author, excerpt) },
+                            onAutoFetchMedia = onAutoFetchMedia,
+                            onOpenImage = onOpenImage,
+                            onUnsupportedMediaClick = onUnsupportedMediaClick,
+                        )
+                    }
                 }
             }
         }
 
         if (showJumpToBottom) {
-            SmallFloatingActionButton(
+            ScrollToBottomButton(
                 onClick = { scope.launch { listState.scrollToItem(messages.lastIndex) } },
-                shape = CircleShape,
-                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                contentColor = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(16.dp),
-            ) {
-                Icon(Icons.Rounded.ArrowDownward, contentDescription = "回到底部")
-            }
+                    .padding(12.dp),
+            )
         }
     }
 }
@@ -578,6 +1055,7 @@ private fun ChatView(
 private fun UserPromptTurn(
     parts: List<UiPart>,
     fetchedMediaPaths: Map<String, String>,
+    onQuote: (String) -> Unit,
     onAutoFetchMedia: (UiPart.Media) -> Unit,
     onOpenImage: (UiPart.Media) -> Unit,
     onUnsupportedMediaClick: () -> Unit,
@@ -585,6 +1063,7 @@ private fun UserPromptTurn(
     val extras = SidekickThemeExtras.colors
     val textParts = parts.filterIsInstance<UiPart.Text>()
     val mediaParts = parts.filterIsInstance<UiPart.Media>()
+    val userPlainText = remember(textParts) { textParts.joinToString("\n") { it.text }.trim() }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -604,22 +1083,41 @@ private fun UserPromptTurn(
         }
         if (textParts.isNotEmpty()) {
             Surface(
-                modifier = Modifier.widthIn(max = 300.dp),
-                shape = RoundedCornerShape(20.dp),
+                modifier = Modifier.widthIn(max = 320.dp),
+                shape = RoundedCornerShape(22.dp),
                 color = extras.userBubble,
             ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    textParts.forEach { tp ->
-                        Text(
-                            text = tp.text,
-                            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp, lineHeight = 21.sp),
-                            color = extras.onUserBubble,
-                        )
+                SelectionContainer {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        textParts.forEach { tp ->
+                            Text(
+                                text = tp.text,
+                                style = MaterialTheme.typography.bodyLarge.copy(
+                                    fontSize = 16.sp,
+                                    lineHeight = 23.sp,
+                                ),
+                                color = extras.onUserBubble,
+                            )
+                        }
                     }
                 }
+            }
+            Box(
+                modifier = Modifier
+                    .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { onQuote(summarizeExcerpt(userPlainText)) },
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.FormatQuote,
+                    contentDescription = "引用用户消息",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp),
+                )
             }
         }
     }
@@ -632,6 +1130,7 @@ private fun AssistantTurn(
     parts: List<UiPart>,
     fetchedMediaPaths: Map<String, String>,
     onCopyText: (String, String) -> Unit,
+    onQuote: (String, String) -> Unit,
     onAutoFetchMedia: (UiPart.Media) -> Unit,
     onOpenImage: (UiPart.Media) -> Unit,
     onUnsupportedMediaClick: () -> Unit,
@@ -639,6 +1138,7 @@ private fun AssistantTurn(
     val plainText = remember(parts) {
         parts.filterIsInstance<UiPart.Text>().joinToString("\n\n") { it.text }
     }
+    val authorLabel = model?.takeIf { it.isNotBlank() } ?: ToolVisuals.label(tool)
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -647,9 +1147,9 @@ private fun AssistantTurn(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            ToolIcon(tool = tool, size = 18.dp)
+            ToolIcon(tool = tool, size = 18.dp, contentDescription = null)
             Text(
-                text = model?.takeIf { it.isNotBlank() } ?: ToolVisuals.label(tool),
+                text = authorLabel,
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -689,22 +1189,77 @@ private fun AssistantTurn(
         }
 
         if (plainText.isNotBlank()) {
-            Box(
-                modifier = Modifier
-                    .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable { onCopyText(plainText, "回复") },
-                contentAlignment = Alignment.CenterStart,
+            var copiedRecently by remember { mutableStateOf(false) }
+            LaunchedEffect(copiedRecently) {
+                if (copiedRecently) {
+                    delay(1500)
+                    copiedRecently = false
+                }
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.ContentCopy,
-                    contentDescription = "复制回复",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(16.dp),
-                )
+                Row(
+                    modifier = Modifier
+                        .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable {
+                            onCopyText(plainText, "回复")
+                            copiedRecently = true
+                        }
+                        .padding(end = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    Icon(
+                        imageVector = if (copiedRecently) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
+                        contentDescription = "复制回复",
+                        tint = if (copiedRecently) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    if (copiedRecently) {
+                        Text(
+                            text = "已复制",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier
+                        .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onQuote(authorLabel, summarizeExcerpt(plainText)) }
+                        .padding(horizontal = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.FormatQuote,
+                        contentDescription = "引用回复",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Text(
+                        text = "引用",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
+}
+
+private fun summarizeExcerpt(raw: String, maxChars: Int = 160): String {
+    val clean = raw
+        .replace(Regex("```[\\s\\S]*?```"), " [代码块] ")
+        .lines()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .joinToString(" ")
+    return if (clean.length <= maxChars) clean else clean.take(maxChars - 1) + "…"
 }
 
 @Composable
@@ -1333,6 +1888,7 @@ private sealed interface MdBlock {
     data class Paragraph(val text: String) : MdBlock
     data class Code(val lang: String, val code: String) : MdBlock
     data class Quote(val text: String) : MdBlock
+    data class Table(val headers: List<String>, val rows: List<List<String>>) : MdBlock
     data object Divider : MdBlock
 }
 
@@ -1344,18 +1900,25 @@ private fun MarkdownContent(
 ) {
     val blocks = remember(md) { splitMarkdownBlocks(md) }
     val extras = SidekickThemeExtras.colors
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    val linkColor = MaterialTheme.colorScheme.secondary
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         blocks.forEach { block ->
             when (block) {
                 is MdBlock.Paragraph -> {
-                    val styled = remember(block.text, extras.codeBg, extras.codeText) {
-                        renderInlineAndHeadings(block.text, extras.codeBg, extras.codeText)
+                    val styled = remember(block.text, extras.codeBg, extras.codeText, linkColor) {
+                        renderInlineAndHeadings(block.text, extras.codeBg, extras.codeText, linkColor)
                     }
-                    Text(
-                        text = styled,
-                        style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.5.sp, lineHeight = 24.sp),
-                        color = textColor,
-                    )
+                    SelectionContainer {
+                        Text(
+                            text = styled,
+                            style = MaterialTheme.typography.bodyLarge.copy(
+                                fontSize = 16.sp,
+                                lineHeight = 26.sp,
+                                letterSpacing = 0.1.sp,
+                            ),
+                            color = textColor,
+                        )
+                    }
                 }
                 is MdBlock.Code -> CodeBlockCard(
                     lang = block.lang,
@@ -1363,6 +1926,9 @@ private fun MarkdownContent(
                     onCopy = { onCopyCode(block.code) },
                 )
                 is MdBlock.Quote -> {
+                    val styledQuote = remember(block.text, extras.codeBg, extras.codeText, linkColor) {
+                        renderInlineAndHeadings(block.text, extras.codeBg, extras.codeText, linkColor)
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1376,14 +1942,92 @@ private fun MarkdownContent(
                                 .background(MaterialTheme.colorScheme.outline, RoundedCornerShape(2.dp)),
                         )
                         Spacer(Modifier.width(12.dp))
+                        SelectionContainer {
+                            Text(
+                                text = styledQuote,
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontSize = 15.sp,
+                                    lineHeight = 24.sp,
+                                ),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+                is MdBlock.Table -> MarkdownTableBlock(
+                    table = block,
+                    codeBg = extras.codeBg,
+                    codeText = extras.codeText,
+                    linkColor = linkColor,
+                )
+                MdBlock.Divider -> HairlineDivider()
+            }
+        }
+    }
+}
+
+@Composable
+private fun MarkdownTableBlock(
+    table: MdBlock.Table,
+    codeBg: Color,
+    codeText: Color,
+    linkColor: Color,
+) {
+    val extras = SidekickThemeExtras.colors
+    val colCount = table.headers.size.coerceAtLeast(1)
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(0.5.dp, extras.hairline),
+    ) {
+        SelectionContainer {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+            ) {
+                Row(
+                    modifier = Modifier.background(MaterialTheme.colorScheme.surfaceContainer),
+                ) {
+                    table.headers.forEach { cell ->
                         Text(
-                            text = block.text,
-                            style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            text = remember(cell, codeBg, codeText, linkColor) {
+                                renderInlineAndHeadings(cell, codeBg, codeText, linkColor)
+                            },
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp,
+                                lineHeight = 18.sp,
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier
+                                .width(156.dp)
+                                .padding(horizontal = 12.dp, vertical = 9.dp),
                         )
                     }
                 }
-                MdBlock.Divider -> HairlineDivider()
+                table.rows.forEach { row ->
+                    HairlineDivider()
+                    Row {
+                        for (c in 0 until colCount) {
+                            val cellText = row.getOrElse(c) { "" }
+                            Text(
+                                text = remember(cellText, codeBg, codeText, linkColor) {
+                                    renderInlineAndHeadings(cellText, codeBg, codeText, linkColor)
+                                },
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontSize = 13.sp,
+                                    lineHeight = 19.sp,
+                                ),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier
+                                    .width(156.dp)
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -1396,10 +2040,21 @@ private fun CodeBlockCard(
     onCopy: () -> Unit,
 ) {
     val extras = SidekickThemeExtras.colors
+    var copiedRecently by remember { mutableStateOf(false) }
+    LaunchedEffect(copiedRecently) {
+        if (copiedRecently) {
+            delay(1500)
+            copiedRecently = false
+        }
+    }
+    val highlighted = remember(code, lang, extras.isDark, extras.codeText) {
+        highlightCode(code, lang, extras.isDark, extras.codeText)
+    }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
         color = extras.codeBg,
+        border = if (extras.isDark) null else BorderStroke(0.5.dp, extras.codeBorder),
     ) {
         Column {
             Row(
@@ -1419,42 +2074,169 @@ private fun CodeBlockCard(
                     modifier = Modifier
                         .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                         .clip(RoundedCornerShape(6.dp))
-                        .clickable(onClick = onCopy)
+                        .clickable {
+                            onCopy()
+                            copiedRecently = true
+                        }
                         .padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.ContentCopy,
+                        imageVector = if (copiedRecently) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
                         contentDescription = "复制代码",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        tint = if (copiedRecently) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(14.dp),
                     )
                     Text(
-                        text = "复制",
+                        text = if (copiedRecently) "已复制" else "复制",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (copiedRecently) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
-            Text(
-                text = code,
-                fontFamily = FontFamily.Monospace,
-                fontSize = 13.sp,
-                lineHeight = 19.sp,
-                color = extras.codeText,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(14.dp),
-            )
+            SelectionContainer {
+                Text(
+                    text = highlighted,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 13.5.sp,
+                    lineHeight = 20.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                )
+            }
         }
+    }
+}
+
+private val CODE_KEYWORDS = setOf(
+    "fun", "val", "var", "class", "interface", "object", "data", "sealed", "enum",
+    "if", "else", "when", "for", "while", "do", "return", "break", "continue",
+    "suspend", "inline", "override", "private", "internal", "public", "open",
+    "import", "package", "try", "catch", "finally", "throw", "true", "false", "null",
+    "func", "type", "struct", "chan", "go", "defer", "select", "range", "nil", "map",
+    "const", "let", "async", "await", "export", "from", "function", "typeof", "undefined",
+    "def", "lambda", "with", "yield", "None", "True", "False", "pass", "raise", "and", "or", "not",
+    "fn", "impl", "trait", "pub", "mut", "match", "use", "mod", "local", "then", "end",
+    "SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "CREATE", "TABLE", "DELETE", "UPDATE",
+)
+
+private fun highlightCode(
+    code: String,
+    lang: String,
+    isDark: Boolean,
+    defaultColor: Color,
+): AnnotatedString {
+    val kwColor = if (isDark) Color(0xFFFF7B72) else Color(0xFFCF222E)
+    val strColor = if (isDark) Color(0xFFA5D6FF) else Color(0xFF0A3069)
+    val commentColor = if (isDark) Color(0xFF8B949E) else Color(0xFF57606A)
+    val numColor = if (isDark) Color(0xFF79C0FF) else Color(0xFF0550AE)
+    val annColor = if (isDark) Color(0xFFD2A8FF) else Color(0xFF6639BA)
+    val l = lang.lowercase()
+    val hashComment = l in setOf("py", "python", "sh", "bash", "zsh", "yaml", "yml", "toml", "rb", "ruby", "conf")
+    val dashComment = l in setOf("sql", "lua")
+
+    return buildAnnotatedString {
+        var i = 0
+        val n = code.length
+        while (i < n) {
+            val c = code[i]
+            // Line comments
+            if ((c == '/' && i + 1 < n && code[i + 1] == '/') ||
+                (hashComment && c == '#') ||
+                (dashComment && c == '-' && i + 1 < n && code[i + 1] == '-')
+            ) {
+                val end = code.indexOf('\n', i).let { if (it < 0) n else it }
+                withStyle(SpanStyle(color = commentColor, fontStyle = FontStyle.Italic)) {
+                    append(code.substring(i, end))
+                }
+                i = end
+                continue
+            }
+            // String literals
+            if (c == '"' || c == '\'' || c == '`') {
+                var j = i + 1
+                while (j < n) {
+                    if (code[j] == '\\' && j + 1 < n) {
+                        j += 2
+                        continue
+                    }
+                    if (code[j] == c) {
+                        j++
+                        break
+                    }
+                    if (code[j] == '\n' && c != '`') break
+                    j++
+                }
+                withStyle(SpanStyle(color = strColor)) { append(code.substring(i, j)) }
+                i = j
+                continue
+            }
+            // Annotations (@...)
+            if (c == '@' && i + 1 < n && code[i + 1].isLetter()) {
+                var j = i + 1
+                while (j < n && (code[j].isLetterOrDigit() || code[j] == '_')) j++
+                withStyle(SpanStyle(color = annColor)) { append(code.substring(i, j)) }
+                i = j
+                continue
+            }
+            // Numbers
+            if (c.isDigit() && (i == 0 || !code[i - 1].isLetterOrDigit())) {
+                var j = i + 1
+                while (j < n && (code[j].isLetterOrDigit() || code[j] == '_' || code[j] == '.')) j++
+                withStyle(SpanStyle(color = numColor)) { append(code.substring(i, j)) }
+                i = j
+                continue
+            }
+            // Identifiers & keywords
+            if (c.isLetter() || c == '_') {
+                var j = i + 1
+                while (j < n && (code[j].isLetterOrDigit() || code[j] == '_')) j++
+                val word = code.substring(i, j)
+                when {
+                    word in CODE_KEYWORDS -> withStyle(SpanStyle(color = kwColor, fontWeight = FontWeight.Medium)) {
+                        append(word)
+                    }
+                    word.first().isUpperCase() -> withStyle(SpanStyle(color = numColor)) {
+                        append(word)
+                    }
+                    else -> withStyle(SpanStyle(color = defaultColor)) {
+                        append(word)
+                    }
+                }
+                i = j
+                continue
+            }
+            withStyle(SpanStyle(color = defaultColor)) { append(c) }
+            i++
+        }
+    }
+}
+
+private fun parsePipeRow(line: String): List<String>? {
+    val trimmed = line.trim()
+    if (!trimmed.contains('|')) return null
+    val core = trimmed.removePrefix("|").removeSuffix("|")
+    val cells = core.split('|').map { it.trim() }
+    return if (cells.size >= 2) cells else null
+}
+
+private fun isTableSeparatorRow(line: String, expectedCols: Int): Boolean {
+    val cells = parsePipeRow(line) ?: return false
+    if (cells.size != expectedCols) return false
+    return cells.all { cell ->
+        val s = cell.trim()
+        s.isNotEmpty() && s.all { it == '-' || it == ':' } && s.contains('-')
     }
 }
 
 private fun splitMarkdownBlocks(md: String): List<MdBlock> {
     val result = mutableListOf<MdBlock>()
+    val lines = md.lines()
     val textBuf = StringBuilder()
+    val quoteBuf = StringBuilder()
     val codeBuf = StringBuilder()
     var inFence = false
     var fenceLang = ""
@@ -1466,10 +2248,20 @@ private fun splitMarkdownBlocks(md: String): List<MdBlock> {
         }
     }
 
-    md.lines().forEach { line ->
+    fun flushQuote() {
+        if (quoteBuf.isNotEmpty()) {
+            result += MdBlock.Quote(quoteBuf.toString().trimEnd('\n'))
+            quoteBuf.clear()
+        }
+    }
+
+    var idx = 0
+    while (idx < lines.size) {
+        val line = lines[idx]
         val trimmed = line.trimStart()
         when {
             trimmed.startsWith("```") -> {
+                flushQuote()
                 if (!inFence) {
                     flushText()
                     inFence = true
@@ -1486,20 +2278,42 @@ private fun splitMarkdownBlocks(md: String): List<MdBlock> {
                 if (codeBuf.isNotEmpty()) codeBuf.append('\n')
                 codeBuf.append(line)
             }
-            trimmed == "---" || trimmed == "***" -> {
+            trimmed.startsWith(">") -> {
                 flushText()
-                result += MdBlock.Divider
-            }
-            trimmed.startsWith("> ") -> {
-                flushText()
-                result += MdBlock.Quote(trimmed.removePrefix("> ").trim())
+                val quoteLine = trimmed.removePrefix(">").trimStart()
+                if (quoteBuf.isNotEmpty()) quoteBuf.append('\n')
+                quoteBuf.append(quoteLine)
             }
             else -> {
-                if (textBuf.isNotEmpty()) textBuf.append('\n')
-                textBuf.append(line)
+                flushQuote()
+                val headers = parsePipeRow(trimmed)
+                if (headers != null && idx + 1 < lines.size && isTableSeparatorRow(lines[idx + 1], headers.size)) {
+                    flushText()
+                    val rows = mutableListOf<List<String>>()
+                    idx += 2
+                    while (idx < lines.size) {
+                        val row = parsePipeRow(lines[idx]) ?: break
+                        rows += row
+                        idx++
+                    }
+                    result += MdBlock.Table(headers, rows)
+                    continue
+                }
+                when {
+                    trimmed == "---" || trimmed == "***" -> {
+                        flushText()
+                        result += MdBlock.Divider
+                    }
+                    else -> {
+                        if (textBuf.isNotEmpty()) textBuf.append('\n')
+                        textBuf.append(line)
+                    }
+                }
             }
         }
+        idx++
     }
+    flushQuote()
     if (inFence && codeBuf.isNotEmpty()) {
         result += MdBlock.Code(fenceLang, codeBuf.toString())
     } else {
@@ -1508,32 +2322,99 @@ private fun splitMarkdownBlocks(md: String): List<MdBlock> {
     return result
 }
 
-private fun renderInlineAndHeadings(md: String, inlineCodeBg: Color, inlineCodeFg: Color): AnnotatedString =
+private val ORDERED_LIST_REGEX = Regex("^(\\d+)\\.\\s+(.*)$")
+
+private fun renderInlineAndHeadings(
+    md: String,
+    inlineCodeBg: Color,
+    inlineCodeFg: Color,
+    linkColor: Color,
+): AnnotatedString =
     buildAnnotatedString {
         val lines = md.lines()
         lines.forEachIndexed { idx, line ->
+            val trimmed = line.trimStart()
+            val indent = line.takeWhile { it == ' ' }
             when {
-                line.startsWith("#") -> {
-                    val content = line.trimStart('#', ' ')
+                trimmed.startsWith("### ") -> {
                     withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontSize = 17.sp)) {
-                        append(content)
+                        appendInlineMarkdown(trimmed.removePrefix("### "), inlineCodeBg, inlineCodeFg, linkColor)
                     }
                 }
-                line.trimStart().startsWith("- ") || line.trimStart().startsWith("* ") -> {
-                    val indent = line.takeWhile { it == ' ' }
+                trimmed.startsWith("## ") -> {
+                    withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontSize = 19.sp)) {
+                        appendInlineMarkdown(trimmed.removePrefix("## "), inlineCodeBg, inlineCodeFg, linkColor)
+                    }
+                }
+                trimmed.startsWith("# ") -> {
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontSize = 21.sp)) {
+                        appendInlineMarkdown(trimmed.removePrefix("# "), inlineCodeBg, inlineCodeFg, linkColor)
+                    }
+                }
+                trimmed.startsWith("- ") || trimmed.startsWith("* ") -> {
                     append(indent)
                     append("• ")
-                    appendInlineMarkdown(line.trimStart().drop(2), inlineCodeBg, inlineCodeFg)
+                    appendInlineMarkdown(trimmed.drop(2), inlineCodeBg, inlineCodeFg, linkColor)
                 }
-                else -> appendInlineMarkdown(line, inlineCodeBg, inlineCodeFg)
+                ORDERED_LIST_REGEX.matches(trimmed) -> {
+                    val match = ORDERED_LIST_REGEX.matchEntire(trimmed)!!
+                    append(indent)
+                    withStyle(SpanStyle(fontWeight = FontWeight.Medium, fontFamily = FontFamily.Monospace)) {
+                        append("${match.groupValues[1]}. ")
+                    }
+                    appendInlineMarkdown(match.groupValues[2], inlineCodeBg, inlineCodeFg, linkColor)
+                }
+                else -> appendInlineMarkdown(line, inlineCodeBg, inlineCodeFg, linkColor)
             }
             if (idx < lines.lastIndex) append('\n')
         }
     }
 
-private fun AnnotatedString.Builder.appendInlineMarkdown(line: String, codeBg: Color, codeFg: Color) {
+private fun AnnotatedString.Builder.appendInlineMarkdown(
+    line: String,
+    codeBg: Color,
+    codeFg: Color,
+    linkColor: Color,
+) {
     var i = 0
     while (i < line.length) {
+        if (line[i] == '[' ) {
+            val closeBracket = line.indexOf(']', i + 1)
+            if (closeBracket > i + 1 && closeBracket + 1 < line.length && line[closeBracket + 1] == '(') {
+                val closeParen = line.indexOf(')', closeBracket + 2)
+                if (closeParen > closeBracket + 2) {
+                    val label = line.substring(i + 1, closeBracket)
+                    val url = line.substring(closeBracket + 2, closeParen).trim()
+                    if (url.startsWith("http://") || url.startsWith("https://")) {
+                        withLink(
+                            LinkAnnotation.Url(
+                                url = url,
+                                styles = TextLinkStyles(
+                                    style = SpanStyle(
+                                        color = linkColor,
+                                        textDecoration = TextDecoration.Underline,
+                                    ),
+                                ),
+                            ),
+                        ) {
+                            append(label)
+                        }
+                        i = closeParen + 1
+                        continue
+                    }
+                }
+            }
+        }
+        if (line.startsWith("***", i)) {
+            val end = line.indexOf("***", i + 3)
+            if (end > i + 3) {
+                withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontStyle = FontStyle.Italic)) {
+                    append(line.substring(i + 3, end))
+                }
+                i = end + 3
+                continue
+            }
+        }
         if (line.startsWith("**", i)) {
             val end = line.indexOf("**", i + 2)
             if (end > i + 2) {
@@ -1542,10 +2423,28 @@ private fun AnnotatedString.Builder.appendInlineMarkdown(line: String, codeBg: C
                 continue
             }
         }
+        if (line.startsWith("~~", i)) {
+            val end = line.indexOf("~~", i + 2)
+            if (end > i + 2) {
+                withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) {
+                    append(line.substring(i + 2, end))
+                }
+                i = end + 2
+                continue
+            }
+        }
+        if (line[i] == '*' && (i + 1 >= line.length || line[i + 1] != ' ')) {
+            val end = line.indexOf('*', i + 1)
+            if (end > i + 1) {
+                withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(line.substring(i + 1, end)) }
+                i = end + 1
+                continue
+            }
+        }
         if (line[i] == '`') {
             val end = line.indexOf('`', i + 1)
             if (end > i + 1) {
-                withStyle(SpanStyle(fontFamily = FontFamily.Monospace, fontSize = 13.5.sp, background = codeBg, color = codeFg)) {
+                withStyle(SpanStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp, background = codeBg, color = codeFg)) {
                     append(" ")
                     append(line.substring(i + 1, end))
                     append(" ")
@@ -1559,16 +2458,18 @@ private fun AnnotatedString.Builder.appendInlineMarkdown(line: String, codeBg: C
     }
 }
 
+private fun terminalPlainText(lines: List<AnsiLine>): String =
+    lines.joinToString("\n") { l -> l.spans.joinToString("") { it.text } }
+
 @Composable
 private fun TerminalView(
     lines: List<AnsiLine>,
     revision: Long,
-    onCopyScreen: (String) -> Unit,
+    fontSizeSp: Int,
+    softWrap: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val extras = SidekickThemeExtras.colors
-    var fontSizeSp by rememberSaveable { mutableIntStateOf(12) }
-    var softWrap by rememberSaveable { mutableStateOf(true) }
 
     // Chunk every 50 lines per remote-sync-android.md §6 to keep 2000-line scrollback smooth.
     val syncSmallChunks = remember(lines, revision, extras.terminalFg) {
@@ -1602,111 +2503,57 @@ private fun TerminalView(
         }
     }
 
-    Column(modifier = modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 14.dp, end = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = if (extras.isDark) 0.dp else 12.dp, vertical = if (extras.isDark) 0.dp else 4.dp),
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            shape = if (extras.isDark) RoundedCornerShape(0.dp) else RoundedCornerShape(16.dp),
+            color = extras.terminalBg,
+            border = if (extras.isDark) null else BorderStroke(1.dp, extras.terminalBorder),
         ) {
-            Text(
-                text = "ANSI · ${lines.size} 行",
-                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
-            )
-            IconButton(onClick = { if (fontSizeSp > 10) fontSizeSp-- }) {
-                Icon(Icons.Rounded.TextDecrease, contentDescription = "减小字号", modifier = Modifier.size(18.dp))
-            }
-            Text(
-                text = "$fontSizeSp",
-                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            IconButton(onClick = { if (fontSizeSp < 16) fontSizeSp++ }) {
-                Icon(Icons.Rounded.TextIncrease, contentDescription = "增大字号", modifier = Modifier.size(18.dp))
-            }
-            IconButton(
-                onClick = { softWrap = !softWrap },
-                modifier = Modifier.semantics {
-                    stateDescription = if (softWrap) "已开启自动换行" else "已关闭自动换行"
-                },
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.WrapText,
-                    contentDescription = if (softWrap) "关闭自动换行" else "开启自动换行",
-                    tint = if (softWrap) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-            IconButton(
-                onClick = {
-                    val plain = lines.joinToString("\n") { l -> l.spans.joinToString("") { it.text } }
-                    if (plain.isNotBlank()) onCopyScreen(plain)
-                },
-            ) {
-                Icon(Icons.Rounded.ContentCopy, contentDescription = "复制屏幕", modifier = Modifier.size(18.dp))
-            }
-        }
-
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = if (extras.isDark) 0.dp else 12.dp, vertical = if (extras.isDark) 0.dp else 4.dp),
-        ) {
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                shape = if (extras.isDark) RoundedCornerShape(0.dp) else RoundedCornerShape(16.dp),
-                color = extras.terminalBg,
-                border = if (extras.isDark) null else BorderStroke(1.dp, extras.terminalBorder),
-            ) {
-                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-                    if (chunks.isEmpty()) {
-                        Text(
-                            text = "等待 PTY 屏幕输出…",
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                            color = extras.terminalFg.copy(alpha = 0.65f),
-                            modifier = Modifier.align(Alignment.Center),
-                        )
+            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                if (chunks.isEmpty()) {
+                    Text(
+                        text = "等待 PTY 屏幕输出…",
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        color = extras.terminalFg.copy(alpha = 0.65f),
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+                } else {
+                    val hScrollModifier = if (softWrap) {
+                        Modifier.fillMaxSize()
                     } else {
-                        val hScrollModifier = if (softWrap) {
-                            Modifier.fillMaxSize()
-                        } else {
-                            Modifier
-                                .fillMaxSize()
-                                .horizontalScroll(rememberScrollState())
-                                .widthIn(min = maxWidth)
-                        }
-                        LazyColumn(
-                            state = listState,
-                            contentPadding = PaddingValues(12.dp),
-                            modifier = hScrollModifier,
-                        ) {
-                            items(chunks.size, key = { idx -> idx }) { idx ->
-                                Text(
-                                    text = chunks[idx],
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = fontSizeSp.sp,
-                                    lineHeight = (fontSizeSp + 4).sp,
-                                    softWrap = softWrap,
-                                )
-                            }
+                        Modifier
+                            .fillMaxSize()
+                            .horizontalScroll(rememberScrollState())
+                            .widthIn(min = maxWidth)
+                    }
+                    LazyColumn(
+                        state = listState,
+                        contentPadding = PaddingValues(12.dp),
+                        modifier = hScrollModifier,
+                    ) {
+                        items(chunks.size, key = { idx -> idx }) { idx ->
+                            Text(
+                                text = chunks[idx],
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = fontSizeSp.sp,
+                                lineHeight = (fontSizeSp + 4).sp,
+                                softWrap = softWrap,
+                            )
                         }
                     }
-                    if (showJumpToBottom && chunks.isNotEmpty()) {
-                        SmallFloatingActionButton(
-                            onClick = { scope.launch { listState.scrollToItem(chunks.lastIndex) } },
-                            shape = CircleShape,
-                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            contentColor = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier
-                                .align(Alignment.BottomEnd)
-                                .padding(16.dp),
-                        ) {
-                            Icon(Icons.Rounded.ArrowDownward, contentDescription = "回到底部")
-                        }
-                    }
+                }
+                if (showJumpToBottom && chunks.isNotEmpty()) {
+                    ScrollToBottomButton(
+                        onClick = { scope.launch { listState.scrollToItem(chunks.lastIndex) } },
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(12.dp),
+                    )
                 }
             }
         }
@@ -1741,22 +2588,78 @@ private fun SessionComposer(
     tool: String,
     localTyping: Boolean,
     defaultShowKeycaps: Boolean,
+    dismissSignal: Int,
     pendingAttachments: List<PendingAttachment>,
+    quotedMessage: QuotedMessage?,
+    fileSuggestions: List<WorkspaceFileSuggestion>,
+    slashCommands: List<SlashCommandSuggestion>,
+    screenLines: List<AnsiLine>,
+    onSearchFiles: (String) -> Unit,
+    onClearQuote: () -> Unit,
     onAddAttachment: (PendingAttachment) -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onSendInput: (String, Boolean) -> Unit,
     onSendKey: (Key) -> Unit,
     onFocusChanged: (Boolean) -> Unit,
 ) {
-    var text by rememberSaveable { mutableStateOf("") }
+    var fieldState by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
+    var autocompleteDismissed by rememberSaveable { mutableStateOf(false) }
+    val text = fieldState.text
+    val slashQuery = remember(text) { extractLeadingSlashQuery(text) }
+    val atMatch = remember(text, slashQuery) {
+        if (slashQuery == null) Regex("(?:^|\\s)@([^\\s]*)$").find(text) else null
+    }
+    val atQuery = atMatch?.groupValues?.getOrNull(1)
+
+    fun updateText(newText: String) {
+        autocompleteDismissed = false
+        fieldState = TextFieldValue(text = newText, selection = TextRange(newText.length))
+    }
+
     var showKeycaps by rememberSaveable(defaultShowKeycaps) { mutableStateOf(defaultShowKeycaps) }
     var showMediaSheet by rememberSaveable { mutableStateOf(false) }
+    var livePtySlashMode by rememberSaveable { mutableStateOf(false) }
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     @Suppress("DEPRECATION")
     val clipboard = LocalClipboardManager.current
     val extras = SidekickThemeExtras.colors
+
+    LaunchedEffect(dismissSignal) {
+        if (dismissSignal > 0) {
+            livePtySlashMode = false
+            autocompleteDismissed = true
+        }
+    }
+    LaunchedEffect(atQuery) {
+        if (atQuery != null) {
+            onSearchFiles(atQuery)
+        }
+    }
+    LaunchedEffect(slashQuery) {
+        if (slashQuery == null && livePtySlashMode) {
+            livePtySlashMode = false
+        }
+    }
+
+    val filteredCommands = remember(slashCommands, slashQuery) {
+        if (slashQuery == null) {
+            emptyList()
+        } else {
+            val q = slashQuery.trim().lowercase()
+            if (q.isEmpty()) {
+                slashCommands
+            } else {
+                val prefix = slashCommands.filter { it.name.lowercase().startsWith(q) }
+                val rest = slashCommands.filter {
+                    !it.name.lowercase().startsWith(q) &&
+                        (it.name.lowercase().contains(q) || it.description.lowercase().contains(q))
+                }
+                prefix + rest
+            }
+        }
+    }
 
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
@@ -1784,10 +2687,13 @@ private fun SessionComposer(
     }
 
     fun dispatchSend() {
+        val payload = formatMessageWithQuote(quotedMessage, text)
         when {
-            text.isNotEmpty() || pendingAttachments.isNotEmpty() -> {
-                onSendInput(text, true)
-                text = ""
+            payload.isNotEmpty() || pendingAttachments.isNotEmpty() -> {
+                onSendInput(payload, true)
+                updateText("")
+                livePtySlashMode = false
+                onClearQuote()
             }
             else -> onSendKey(Key.KEY_ENTER)
         }
@@ -1825,6 +2731,53 @@ private fun SessionComposer(
                         color = extras.onWarningContainer,
                     )
                 }
+            }
+        }
+
+        AnimatedVisibility(visible = !autocompleteDismissed && (slashQuery != null || livePtySlashMode)) {
+            SlashCommandAutocompleteSheet(
+                tool = tool,
+                commands = filteredCommands,
+                livePtyMode = livePtySlashMode,
+                screenLines = screenLines,
+                onToggleLivePty = {
+                    val next = !livePtySlashMode
+                    livePtySlashMode = next
+                    if (next) {
+                        onSendInput("/", false)
+                    } else {
+                        onSendKey(Key.KEY_ESCAPE)
+                    }
+                },
+                onSelectCommand = { cmd ->
+                    livePtySlashMode = false
+                    updateText(if (cmd.argsHint.isNotBlank()) "/${cmd.name} " else "/${cmd.name}")
+                },
+                onSendKey = onSendKey,
+            )
+        }
+
+        AnimatedVisibility(visible = !autocompleteDismissed && slashQuery == null && !livePtySlashMode && atQuery != null && fileSuggestions.isNotEmpty()) {
+            FileMentionAutocompleteSheet(
+                files = fileSuggestions,
+                onSelectFile = { file ->
+                    val range = atMatch?.range
+                    if (range != null) {
+                        val leadingSpace = if (text.substring(range).startsWith(" ")) " " else ""
+                        updateText(text.replaceRange(range, "$leadingSpace@${file.relPath} "))
+                    } else {
+                        updateText("$text@${file.relPath} ")
+                    }
+                },
+            )
+        }
+
+        AnimatedVisibility(visible = quotedMessage != null) {
+            quotedMessage?.let { quote ->
+                QuotedMessageBanner(
+                    quote = quote,
+                    onClear = onClearQuote,
+                )
             }
         }
 
@@ -1871,7 +2824,7 @@ private fun SessionComposer(
                     danger = false,
                     onClick = {
                         val clip = clipboard.getText()?.text
-                        if (!clip.isNullOrEmpty()) text += clip
+                        if (!clip.isNullOrEmpty()) updateText(text + clip)
                     },
                 )
             }
@@ -1886,14 +2839,28 @@ private fun SessionComposer(
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 TextField(
-                    value = text,
-                    onValueChange = { text = it },
+                    value = fieldState,
+                    onValueChange = { next ->
+                        autocompleteDismissed = false
+                        fieldState = next
+                        val nextSlash = extractLeadingSlashQuery(next.text)
+                        val nextAt = if (nextSlash == null) {
+                            Regex("(?:^|\\s)@([^\\s]*)$").find(next.text)?.groupValues?.getOrNull(1)
+                        } else {
+                            null
+                        }
+                        if (nextAt != null && nextAt != atQuery) {
+                            onSearchFiles(nextAt)
+                        }
+                    },
                     placeholder = {
                         Text(
                             text = "输入指令…",
+                            style = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp, lineHeight = 23.sp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     },
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp, lineHeight = 23.sp),
                     singleLine = false,
                     maxLines = 5,
                     colors = TextFieldDefaults.colors(
@@ -1909,7 +2876,10 @@ private fun SessionComposer(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 4.dp)
-                        .onFocusChanged { onFocusChanged(it.isFocused) },
+                        .onFocusChanged {
+                            if (it.isFocused) autocompleteDismissed = false
+                            onFocusChanged(it.isFocused)
+                        },
                 )
 
                 Row(
@@ -1925,6 +2895,39 @@ private fun SessionComposer(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    IconButton(
+                        onClick = {
+                            updateText(
+                                when {
+                                    text.isEmpty() || text.last().isWhitespace() -> "$text@"
+                                    else -> "$text @"
+                                },
+                            )
+                        },
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.AlternateEmail,
+                            contentDescription = "引用文件",
+                            tint = if (atQuery != null) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    IconButton(
+                        onClick = {
+                            updateText(if (slashQuery != null) "" else "/")
+                        },
+                        modifier = Modifier.semantics { contentDescription = "斜杠命令" },
+                    ) {
+                        Text(
+                            text = "/",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                            ),
+                            color = if (slashQuery != null) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     IconButton(onClick = { showKeycaps = !showKeycaps }) {
                         Icon(
                             imageVector = Icons.Rounded.Keyboard,
@@ -1935,7 +2938,7 @@ private fun SessionComposer(
                     }
                     Spacer(Modifier.weight(1f))
 
-                    val hasPayload = text.isNotEmpty() || pendingAttachments.isNotEmpty()
+                    val hasPayload = text.isNotEmpty() || quotedMessage != null || pendingAttachments.isNotEmpty()
                     val sendBg = if (hasPayload) {
                         MaterialTheme.colorScheme.primary
                     } else {
@@ -2027,7 +3030,7 @@ private fun SessionComposer(
                     onClick = {
                         showMediaSheet = false
                         val clip = clipboard.getText()?.text
-                        if (!clip.isNullOrEmpty()) text += clip
+                        if (!clip.isNullOrEmpty()) updateText(text + clip)
                     },
                 )
             }
@@ -2149,6 +3152,315 @@ private fun KeycapChip(
                     style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
                     color = if (danger) extras.keycapDangerText else extras.keycapText,
                 )
+            }
+        }
+    }
+}
+
+private fun extractLeadingSlashQuery(text: String): String? {
+    if (text.contains('\n') || !text.startsWith("/")) return null
+    val rest = text.removePrefix("/")
+    return if (rest.none { it.isWhitespace() }) rest else null
+}
+
+private fun formatMessageWithQuote(quote: QuotedMessage?, text: String): String {
+    val body = text.trim()
+    if (quote == null) return text
+    val line = "> [${quote.author}]: ${quote.excerpt.replace('\n', ' ').trim()}"
+    return if (body.isEmpty()) line else "$line\n\n$text"
+}
+
+@Composable
+private fun QuotedMessageBanner(
+    quote: QuotedMessage,
+    onClear: () -> Unit,
+) {
+    val extras = SidekickThemeExtras.colors
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(0.5.dp, extras.hairline),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(IntrinsicSize.Min)
+                .padding(start = 10.dp, end = 2.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(2.5.dp)
+                    .fillMaxHeight()
+                    .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(2.dp)),
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = "引用 ${quote.author}",
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = quote.excerpt,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            IconButton(onClick = onClear) {
+                Icon(
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = "取消引用",
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SlashCommandAutocompleteSheet(
+    tool: String,
+    commands: List<SlashCommandSuggestion>,
+    livePtyMode: Boolean,
+    screenLines: List<AnsiLine>,
+    onToggleLivePty: () -> Unit,
+    onSelectCommand: (SlashCommandSuggestion) -> Unit,
+    onSendKey: (Key) -> Unit,
+) {
+    val extras = SidekickThemeExtras.colors
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(0.5.dp, extras.hairline),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Terminal,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(15.dp),
+                    )
+                    Text(
+                        text = if (livePtyMode) "终端实时菜单 · ${ToolVisuals.label(tool)}"
+                        else "命令 · ${ToolVisuals.label(tool)}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(
+                    onClick = onToggleLivePty,
+                    modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                ) {
+                    Text(
+                        text = if (livePtyMode) "返回列表" else "终端实时 >_",
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
+            HairlineDivider()
+            if (livePtyMode) {
+                val tailLines = remember(screenLines) {
+                    screenLines
+                        .map { l -> l.spans.joinToString("") { it.text }.trimEnd() }
+                        .filter { it.isNotBlank() }
+                        .takeLast(8)
+                }
+                Surface(
+                    color = extras.terminalBg,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = if (tailLines.isEmpty()) "已向终端输入 /，等待 PTY 补全菜单输出…"
+                        else tailLines.joinToString("\n"),
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp,
+                        color = extras.terminalFg,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    listOf(
+                        "↑" to Key.KEY_UP,
+                        "↓" to Key.KEY_DOWN,
+                        "Tab" to Key.KEY_TAB,
+                        "⏎" to Key.KEY_ENTER,
+                        "Esc" to Key.KEY_ESCAPE,
+                    ).forEach { (label, key) ->
+                        KeycapChip(label = label, danger = false, onClick = { onSendKey(key) })
+                    }
+                }
+            } else if (commands.isEmpty()) {
+                Text(
+                    text = "没有匹配的命令，可点右上角「终端实时 >_」直连 CLI 菜单",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(14.dp),
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 150.dp),
+                ) {
+                    itemsIndexed(commands, key = { _, c -> "${c.source}_${c.name}" }) { idx, cmd ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 48.dp)
+                                .clickable { onSelectCommand(cmd) }
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Text(
+                                        text = "/${cmd.name}",
+                                        style = MaterialTheme.typography.labelLarge.copy(
+                                            fontFamily = FontFamily.Monospace,
+                                            fontWeight = FontWeight.SemiBold,
+                                        ),
+                                        color = MaterialTheme.colorScheme.primary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    if (cmd.argsHint.isNotBlank()) {
+                                        Text(
+                                            text = cmd.argsHint,
+                                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                        )
+                                    }
+                                }
+                                if (cmd.description.isNotBlank()) {
+                                    Text(
+                                        text = cmd.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                            Text(
+                                text = cmd.source.tag,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (idx < commands.lastIndex) {
+                            HairlineDivider(Modifier.padding(start = 12.dp))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FileMentionAutocompleteSheet(
+    files: List<WorkspaceFileSuggestion>,
+    onSelectFile: (WorkspaceFileSuggestion) -> Unit,
+) {
+    val extras = SidekickThemeExtras.colors
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(0.5.dp, extras.hairline),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Text(
+                text = "引用工作区文件",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            )
+            HairlineDivider()
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 150.dp),
+            ) {
+                itemsIndexed(files, key = { _, f -> f.relPath }) { idx, file ->
+                    val name = file.relPath.substringAfterLast('/')
+                    val parent = file.relPath.substringBeforeLast('/', "")
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 48.dp)
+                            .clickable { onSelectFile(file) }
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Description,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                            Text(
+                                text = name,
+                                style = MaterialTheme.typography.labelLarge,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            if (parent.isNotBlank()) {
+                                Text(
+                                    text = parent,
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                        if (file.sizeBytes > 0L) {
+                            Text(
+                                text = formatByteSize(file.sizeBytes),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    if (idx < files.lastIndex) {
+                        HairlineDivider(Modifier.padding(start = 40.dp))
+                    }
+                }
             }
         }
     }

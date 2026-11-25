@@ -47,6 +47,10 @@ message Frame {
     Presence presence = 50;
     GetMediaRequest get_media = 51;
     GetMediaResponse media = 52;
+    ListFilesRequest list_files = 53;
+    ListFilesResponse files = 54;
+    ListCommandsRequest list_commands = 55;
+    ListCommandsResponse commands = 56;
   }
 }
 
@@ -381,4 +385,50 @@ message Presence {
   string session_id = 1;
   PresenceSource source = 2;
   bool typing = 3;
+}
+
+message ListFilesRequest {
+  // Preferred: resolve cwd from session. If empty, cwd must fall inside allow-listed workspaces.
+  string session_id = 1;
+  string cwd = 2;
+  string query = 3;
+  uint32 limit = 4;
+}
+
+message FileEntry {
+  string rel_path = 1;
+  bool is_dir = 2;
+  uint64 size_bytes = 3;
+}
+
+message ListFilesResponse {
+  string root_cwd = 1;
+  repeated FileEntry files = 2;
+  bool truncated = 3;
+}
+
+enum SlashCommandSource {
+  SLASH_COMMAND_SOURCE_UNSPECIFIED = 0;
+  SLASH_COMMAND_SOURCE_BUILTIN = 1;
+  SLASH_COMMAND_SOURCE_SKILL = 2;
+  SLASH_COMMAND_SOURCE_PROJECT = 3;
+  SLASH_COMMAND_SOURCE_USER = 4;
+  SLASH_COMMAND_SOURCE_PLUGIN = 5;
+}
+
+message SlashCommand {
+  string name = 1;
+  string description = 2;
+  string args_hint = 3;
+  SlashCommandSource source = 4;
+}
+
+message ListCommandsRequest {
+  string session_id = 1;
+  string tool = 2;
+  string cwd = 3;
+}
+
+message ListCommandsResponse {
+  repeated SlashCommand commands = 1;
 }

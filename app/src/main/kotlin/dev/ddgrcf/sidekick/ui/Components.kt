@@ -81,7 +81,7 @@ fun ConnectionStatusPill(
     ) {
         Icon(
             imageVector = icon,
-            contentDescription = label,
+            contentDescription = if (compact) label else null,
             tint = tint,
             modifier = Modifier.size(16.dp),
         )
@@ -99,12 +99,13 @@ fun ConnectionStatusPill(
 fun ToolIcon(
     tool: String,
     size: Dp = 22.dp,
+    contentDescription: String? = tool,
     modifier: Modifier = Modifier,
 ) {
     val isDark = SidekickThemeExtras.colors.isDark
     Icon(
         imageVector = ToolVisuals.icon(tool),
-        contentDescription = tool,
+        contentDescription = contentDescription,
         tint = ToolVisuals.color(tool, isDark),
         modifier = modifier.size(size),
     )

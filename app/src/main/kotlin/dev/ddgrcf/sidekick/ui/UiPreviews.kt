@@ -22,6 +22,10 @@ import dev.ddgrcf.sidekick.proto.v1.Workspace
 import dev.ddgrcf.sidekick.ui.theme.SidekickTheme
 import dev.ddgrcf.sidekick.vm.MediaKind
 import dev.ddgrcf.sidekick.vm.PendingAttachment
+import dev.ddgrcf.sidekick.vm.SlashCommandSourceUi
+import dev.ddgrcf.sidekick.vm.SlashCommandSuggestion
+import dev.ddgrcf.sidekick.vm.WorkspaceFileSuggestion
+import dev.ddgrcf.sidekick.vm.coreBuiltinSlashCommands
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
@@ -160,12 +164,21 @@ internal object DemoSampleData {
                         ),
                         UiPart.Text(
                             """
-                            分片头固定 **9 bytes**（`u48 | u8 | u16`），单帧最大 **8 MiB**；大于 2 MiB 的视频自动走加密 Blob 通道：
+                            ### 分片与媒体传输策略
+
+                            分片头固定 **9 bytes**（`u48 | u8 | u16`），单帧最大 **8 MiB**；支持 *Noise 直传* 与 *加密 Blob* 自动分流：
+
+                            | 通道 | 适用体积 | 加密方式 |
+                            | --- | --- | --- |
+                            | Tier A · Noise | `<= 2 MiB` | `ChaChaPoly` |
+                            | Tier B · Blob | `> 2 MiB` | 端到端加密分块 |
 
                             ```kotlin
                             const val MAX_CHUNK_PAYLOAD = 60_000
                             const val MAX_FRAME_BYTES = 8 * 1024 * 1024
                             ```
+
+                            > 图片在传输前自动剥离 EXIF 元数据，参见 [设计规范](https://github.com/DDGRCF/sidekick.nvim)。
                             """.trimIndent(),
                         ),
                         UiPart.Media(
@@ -239,6 +252,23 @@ internal object DemoSampleData {
             kind = MediaKind.VIDEO,
         ),
     )
+
+    val sampleFiles = listOf(
+        WorkspaceFileSuggestion("app/android/app/src/main/kotlin/dev/ddgrcf/sidekick/ui/SessionScreen.kt", sizeBytes = 84_200L),
+        WorkspaceFileSuggestion("app/server/internal/bridge/workspace_index.go", sizeBytes = 12_400L),
+        WorkspaceFileSuggestion("app/server/proto/sidekick/v1/remote.proto", sizeBytes = 11_800L),
+        WorkspaceFileSuggestion("lua/sidekick/cli/remote.lua", sizeBytes = 6_200L),
+        WorkspaceFileSuggestion("README.md", sizeBytes = 18_900L),
+    )
+
+    fun sampleCommands(tool: String): List<SlashCommandSuggestion> {
+        val extras = listOf(
+            SlashCommandSuggestion("unslop", "清理 AI 模板化视觉并优化交互", "[screen]", SlashCommandSourceUi.SKILL),
+            SlashCommandSuggestion("unslop-anything", "跨端 UI 诊断、重构与走查", "[treat|review]", SlashCommandSourceUi.SKILL),
+            SlashCommandSuggestion("frontend:audit", "核查移动端热区与对比度", "", SlashCommandSourceUi.PROJECT),
+        )
+        return coreBuiltinSlashCommands(tool) + extras
+    }
 
     val terminalLines: List<AnsiLine> by lazy {
         AnsiParser.parse(

@@ -24,6 +24,7 @@ import dev.ddgrcf.sidekick.core.store.MessageEntity
 import dev.ddgrcf.sidekick.data.UiPart
 import dev.ddgrcf.sidekick.vm.MediaKind
 import dev.ddgrcf.sidekick.vm.PendingAttachment
+import dev.ddgrcf.sidekick.core.relay.QrPairingPayload
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -37,6 +38,9 @@ private sealed interface DemoPage {
 
     @Serializable
     data class Bridge(val name: String) : DemoPage
+
+    @Serializable
+    data object Pair : DemoPage
 
     @Serializable
     data class Session(
@@ -182,12 +186,21 @@ fun DemoPreviewFlow(
         }
     }
     var screenRevision by rememberSaveable { mutableLongStateOf(1L) }
+    var fileQuery by remember { mutableStateOf("") }
     var demoToast by remember { mutableStateOf<String?>(null) }
+    var pairStatus by rememberSaveable { mutableStateOf<String?>(null) }
+    var pairIsError by rememberSaveable { mutableStateOf(false) }
+    val filteredDemoFiles = remember(fileQuery) {
+        val q = fileQuery.trim().lowercase()
+        if (q.isEmpty()) DemoSampleData.sampleFiles
+        else DemoSampleData.sampleFiles.filter { it.relPath.lowercase().contains(q) }
+    }
 
     BackHandler(enabled = page != DemoPage.Home) {
         page = when (val cur = page) {
             DemoPage.Home -> DemoPage.Home
             is DemoPage.Bridge -> DemoPage.Home
+            DemoPage.Pair -> DemoPage.Home
             is DemoPage.Session -> DemoPage.Bridge(DemoSampleData.bridges.first().name)
             DemoPage.Settings -> DemoPage.Home
         }
@@ -203,8 +216,41 @@ fun DemoPreviewFlow(
                 isDemo = true,
                 onRefresh = {},
                 onOpenBridge = { dev -> page = DemoPage.Bridge(dev.name) },
-                onOpenPair = { page = DemoPage.Bridge(DemoSampleData.bridges.first().name) },
+                onOpenPair = {
+                    pairStatus = null
+                    pairIsError = false
+                    page = DemoPage.Pair
+                },
                 onOpenSettings = { page = DemoPage.Settings },
+            )
+        }
+        DemoPage.Pair -> {
+            PairContent(
+                status = pairStatus,
+                isError = pairIsError,
+                busy = false,
+                paired = false,
+                isDemo = true,
+                onBack = { page = DemoPage.Home },
+                onPairQrJson = { raw ->
+                    val qr = runCatching { json.decodeFromString<QrPairingPayload>(raw) }.getOrNull()
+                    if (qr == null || qr.v != 1 || qr.eid.isBlank() || qr.psk.isBlank()) {
+                        pairIsError = true
+                        pairStatus = "已扫码内容非 sidekick 配对二维码（需含 v=1/eid/psk）"
+                    } else {
+                        pairIsError = false
+                        pairStatus = "已成功识别配对二维码（eid=${qr.eid}），请连接真实 Relay 后完成加密绑定"
+                    }
+                },
+                onPairManualCode = { userCode, psk ->
+                    if (psk.isBlank()) {
+                        pairIsError = true
+                        pairStatus = "缺少一次性 PSK，禁止无 PSK 握手"
+                    } else {
+                        pairIsError = false
+                        pairStatus = "演示校验通过：配对码 ${userCode.trim()}"
+                    }
+                },
             )
         }
         is DemoPage.Bridge -> {
@@ -258,6 +304,9 @@ fun DemoPreviewFlow(
                 localTyping = false,
                 isDemo = true,
                 pendingAttachments = pendingAttachments.toList(),
+                fileSuggestions = filteredDemoFiles,
+                slashCommands = remember(cur.tool) { DemoSampleData.sampleCommands(cur.tool) },
+                onSearchFiles = { fileQuery = it },
                 toast = demoToast,
                 onClearToast = { demoToast = null },
                 onBack = { page = DemoPage.Bridge(DemoSampleData.bridges.first().name) },

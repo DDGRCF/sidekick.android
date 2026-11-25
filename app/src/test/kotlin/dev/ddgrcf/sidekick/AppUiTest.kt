@@ -1,6 +1,9 @@
 package dev.ddgrcf.sidekick
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasStateDescription
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -10,7 +13,10 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.test.performTouchInput
 import dev.ddgrcf.sidekick.core.ansi.AnsiParser
 import dev.ddgrcf.sidekick.core.relay.ConnectionState
 import dev.ddgrcf.sidekick.core.relay.RelayDevice
@@ -22,16 +28,22 @@ import dev.ddgrcf.sidekick.ui.BridgeContent
 import dev.ddgrcf.sidekick.ui.DemoPreviewFlow
 import dev.ddgrcf.sidekick.ui.HomeContent
 import dev.ddgrcf.sidekick.ui.LoginContent
+import dev.ddgrcf.sidekick.ui.PairContent
 import dev.ddgrcf.sidekick.ui.SessionContent
 import dev.ddgrcf.sidekick.ui.theme.SidekickTheme
 import dev.ddgrcf.sidekick.vm.MediaKind
 import dev.ddgrcf.sidekick.vm.PendingAttachment
+import dev.ddgrcf.sidekick.vm.SlashCommandSourceUi
+import dev.ddgrcf.sidekick.vm.SlashCommandSuggestion
+import dev.ddgrcf.sidekick.vm.WorkspaceFileSuggestion
+import dev.ddgrcf.sidekick.vm.coreBuiltinSlashCommands
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
 class AppUiTest {
@@ -204,6 +216,47 @@ class AppUiTest {
     }
 
     @Test
+    fun sessionChatRendersMarkdownTableQuoteAndCopyCheckmark() {
+        val parts = listOf(
+            UiPart.Text(
+                """
+                | 字段 | 说明 |
+                | --- | --- |
+                | ack_seq | 增量续传游标 |
+
+                > 断线重连后自动从断点恢复
+                """.trimIndent(),
+            ),
+        )
+        composeRule.setContent {
+            SidekickTheme(darkTheme = true) {
+                SessionContent(
+                    title = "codex session",
+                    tool = "codex",
+                    structuredHistory = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = listOf(MessageEntity("b1", "c1", 1, "ROLE_ASSISTANT", "[]", 1L, "gpt-5")),
+                    decodeParts = { parts },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { _, _ -> },
+                    onSendKey = {},
+                    onFocusChanged = {},
+                )
+            }
+        }
+        composeRule.onNodeWithText("ack_seq").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("增量续传游标").assertIsDisplayed()
+        composeRule.onNodeWithText("断线重连后自动从断点恢复").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("复制回复").performScrollTo().performClick()
+        composeRule.onNodeWithText("已复制").assertIsDisplayed()
+    }
+
+    @Test
     fun sessionChatRendersMediaCardsAndPendingAttachmentTray() {
         val parts = listOf(
             UiPart.Media("m1", "image", "image/webp", "screenshot.webp", sizeBytes = 320_000L, width = 1280, height = 720),
@@ -295,5 +348,209 @@ class AppUiTest {
         composeRule.onNodeWithText("Terminal").assertIsDisplayed()
         composeRule.onNodeWithText("ANSI · 5 行").assertIsDisplayed()
         composeRule.onNodeWithText("draft kept").assertIsDisplayed()
+    }
+
+    @Test
+    fun sessionComposerSupportsQuoteSlashCommandsWithCompactAndFileMentions() {
+        val sentMessages = mutableListOf<String>()
+        var lastFileQuery: String? = null
+        val files = listOf(
+            WorkspaceFileSuggestion("app/android/app/src/main/kotlin/dev/ddgrcf/sidekick/ui/SessionScreen.kt"),
+        )
+        val commands = coreBuiltinSlashCommands("claude") + listOf(
+            SlashCommandSuggestion("unslop", "UI polish skill", "[target]", SlashCommandSourceUi.SKILL),
+        )
+        composeRule.setContent {
+            SidekickTheme(darkTheme = true) {
+                SessionContent(
+                    title = "claude session",
+                    tool = "claude",
+                    structuredHistory = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = listOf(
+                        MessageEntity(
+                            "b1",
+                            "c1",
+                            1,
+                            "ROLE_ASSISTANT",
+                            """[{"type":"text","text":"Check SessionScreen composer logic"}]""",
+                            1L,
+                            "claude-sonnet",
+                        ),
+                    ),
+                    decodeParts = { listOf(UiPart.Text("Check SessionScreen composer logic")) },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    fileSuggestions = files,
+                    slashCommands = commands,
+                    onSearchFiles = { lastFileQuery = it },
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { t, _ -> sentMessages += t },
+                    onSendKey = {},
+                    onFocusChanged = {},
+                )
+            }
+        }
+
+        // 1. Slash command popup displays /compact + discovered skill via filtering.
+        composeRule.onNodeWithContentDescription("斜杠命令").performClick()
+        composeRule.onNodeWithText("/compact").assertIsDisplayed()
+        composeRule.onNode(hasSetTextAction()).performTextReplacement("/un")
+        composeRule.onNodeWithText("/unslop").assertIsDisplayed()
+
+        // Re-open "/" popup cleanly and pick /compact.
+        composeRule.onNodeWithContentDescription("斜杠命令").performClick()
+        composeRule.onNodeWithContentDescription("斜杠命令").performClick()
+        composeRule.onNodeWithText("/compact").performClick()
+        composeRule.onNodeWithText("/compact ").assertIsDisplayed()
+
+        // Clear slash text, quote assistant message, trigger @file mention, and send.
+        composeRule.onNode(hasSetTextAction()).performTextClearance()
+        composeRule.onNodeWithContentDescription("引用回复").performScrollTo().performClick()
+        composeRule.onNodeWithText("引用 claude-sonnet").assertIsDisplayed()
+
+        composeRule.onNode(hasSetTextAction()).performTextReplacement("Inspect @Sess")
+        composeRule.waitForIdle()
+        assertEquals("Sess", lastFileQuery)
+        composeRule.onNodeWithText("SessionScreen.kt").assertIsDisplayed().performClick()
+        composeRule.onNodeWithContentDescription("发送").performClick()
+
+        val sent = sentMessages.last()
+        assertTrue(sent.startsWith("> [claude-sonnet]: Check SessionScreen composer logic"))
+        assertTrue(sent.contains("@app/android/app/src/main/kotlin/dev/ddgrcf/sidekick/ui/SessionScreen.kt"))
+    }
+
+    @Test
+    fun pairContentValidatesManualPairingAndShowsPermissionAction() {
+        var manualCalled: Pair<String, String>? = null
+        composeRule.setContent {
+            SidekickTheme(darkTheme = true) {
+                PairContent(
+                    status = null,
+                    isError = false,
+                    busy = false,
+                    paired = false,
+                    onBack = {},
+                    onPairQrJson = {},
+                    onPairManualCode = { code, psk -> manualCalled = code to psk },
+                )
+            }
+        }
+        composeRule.onNodeWithText("添加电脑").assertIsDisplayed()
+        composeRule.onNodeWithText("6 位配对码 (user_code)").performTextInput("123456")
+        composeRule.onNodeWithText("一次性 PSK (base64)").performTextInput("AAAA")
+        composeRule.onNodeWithText("确认配对").performClick()
+        assertEquals("123456" to "AAAA", manualCalled)
+    }
+
+    @Test
+    fun sessionAdaptiveHeaderTogglesTitleAndKeepsOfflineVisible() {
+        val connState = androidx.compose.runtime.mutableStateOf(ConnectionState.CONNECTED)
+        composeRule.setContent {
+            SidekickTheme(darkTheme = true) {
+                SessionContent(
+                    title = "Refactor Noise chunking",
+                    tool = "claude",
+                    sessionId = "sid-adaptive-99",
+                    structuredHistory = true,
+                    connectionState = connState.value,
+                    messages = emptyList(),
+                    decodeParts = { emptyList() },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { _, _ -> },
+                    onSendKey = {},
+                    onFocusChanged = {},
+                )
+            }
+        }
+
+        // Initial peek shows full title strip cleanly.
+        composeRule.onNode(hasStateDescription("已展开会话标题")).assertIsDisplayed()
+        composeRule.onNodeWithText("Refactor Noise chunking").assertIsDisplayed()
+        composeRule.onNodeWithText("已连接").assertIsDisplayed()
+
+        // Tapping the compact tool anchor collapses the title strip to reclaim vertical space.
+        composeRule.onNode(hasStateDescription("已展开会话标题")).performClick()
+        composeRule.waitForIdle()
+        composeRule.onNode(hasStateDescription("已收起会话标题")).assertIsDisplayed()
+        composeRule.onNodeWithText("Refactor Noise chunking").assertDoesNotExist()
+
+        // Tapping again re-summons and pins the full title strip.
+        composeRule.onNode(hasStateDescription("已收起会话标题")).performClick()
+        composeRule.waitForIdle()
+        composeRule.onNode(hasStateDescription("已展开会话标题")).assertIsDisplayed()
+        composeRule.onNodeWithText("Refactor Noise chunking").assertIsDisplayed()
+
+        // Offline status keeps the full strip visible even after clicking to collapse.
+        connState.value = ConnectionState.OFFLINE
+        composeRule.waitForIdle()
+        composeRule.onNode(hasStateDescription("已展开会话标题")).performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("离线").assertIsDisplayed()
+        composeRule.onNodeWithText("Refactor Noise chunking").assertIsDisplayed()
+    }
+
+    @Config(qualifiers = "w390dp-h844dp")
+    @Test
+    fun sessionContentTapBlankAreaDismissesPopupAndHeader() {
+        val focusChanges = mutableListOf<Boolean>()
+        composeRule.setContent {
+            SidekickTheme(darkTheme = true) {
+                SessionContent(
+                    title = "Tap dismiss session",
+                    tool = "claude",
+                    sessionId = "sid-tap-dismiss",
+                    structuredHistory = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = listOf(
+                        MessageEntity(
+                            "b1",
+                            "c1",
+                            1,
+                            "ROLE_ASSISTANT",
+                            """[{"type":"text","text":"Hello world"}]""",
+                            1L,
+                            "claude-sonnet",
+                        ),
+                    ),
+                    decodeParts = { listOf(UiPart.Text("Hello world")) },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    slashCommands = coreBuiltinSlashCommands("claude"),
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { _, _ -> },
+                    onSendKey = {},
+                    onFocusChanged = { focusChanges += it },
+                )
+            }
+        }
+
+        // Open slash popup by tapping "/" quick button and focus text field.
+        composeRule.onNodeWithContentDescription("斜杠命令").performClick()
+        composeRule.onNode(hasSetTextAction()).performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("/compact").assertIsDisplayed()
+        composeRule.onNodeWithText("Tap dismiss session").assertIsDisplayed()
+
+        // Tap blank area inside the conversation canvas -> dismisses popup, header strip, and focus while preserving draft "/".
+        val canvasBounds = composeRule.onNodeWithTag("session_canvas").fetchSemanticsNode().boundsInRoot
+        assertTrue(canvasBounds.height > 50f)
+        composeRule.onNodeWithTag("session_canvas").performTouchInput { click(center) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("/compact").assertDoesNotExist()
+        composeRule.onNode(hasStateDescription("已收起会话标题")).assertIsDisplayed()
+        composeRule.onNode(hasSetTextAction() and hasText("/")).assertIsDisplayed()
+        assertTrue(focusChanges.lastOrNull() == false)
     }
 }

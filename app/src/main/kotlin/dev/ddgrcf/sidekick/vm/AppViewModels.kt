@@ -21,10 +21,12 @@ import dev.ddgrcf.sidekick.data.SessionRepository
 import dev.ddgrcf.sidekick.data.UiPart
 import dev.ddgrcf.sidekick.proto.v1.Key
 import dev.ddgrcf.sidekick.proto.v1.PresenceSource
+import dev.ddgrcf.sidekick.proto.v1.SlashCommandSource
 import dev.ddgrcf.sidekick.proto.v1.Stream
 import dev.ddgrcf.sidekick.proto.v1.ToolInfo
 import dev.ddgrcf.sidekick.proto.v1.Workspace
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -33,8 +35,76 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
+
+@Serializable
+data class QuotedMessage(
+    val author: String,
+    val excerpt: String,
+)
+
+data class WorkspaceFileSuggestion(
+    val relPath: String,
+    val isDir: Boolean = false,
+    val sizeBytes: Long = 0L,
+)
+
+enum class SlashCommandSourceUi(val tag: String) {
+    BUILTIN("内置"),
+    SKILL("Skill"),
+    PROJECT("项目"),
+    USER("全局"),
+    PLUGIN("插件"),
+}
+
+data class SlashCommandSuggestion(
+    val name: String,
+    val description: String = "",
+    val argsHint: String = "",
+    val source: SlashCommandSourceUi = SlashCommandSourceUi.BUILTIN,
+)
+
+fun coreBuiltinSlashCommands(tool: String): List<SlashCommandSuggestion> {
+    fun b(name: String, desc: String, args: String = "") = SlashCommandSuggestion(
+        name = name,
+        description = desc,
+        argsHint = args,
+        source = SlashCommandSourceUi.BUILTIN,
+    )
+    return when (tool.lowercase().trim()) {
+        "claude" -> listOf(
+            b("compact", "压缩会话上下文（可选重点说明）", "[focus]"),
+            b("clear", "清空当前对话上下文"),
+            b("model", "切换当前对话模型", "<model>"),
+            b("context", "查看上下文窗口占用情况"),
+            b("diff", "查看当前工作区变更"),
+            b("review", "代码变更审查", "[target]"),
+        )
+        "codex" -> listOf(
+            b("compact", "压缩会话上下文摘要", "[focus]"),
+            b("model", "切换模型或推理强度", "<model>"),
+            b("diff", "查看工作区 Git diff"),
+            b("approvals", "调整审批与权限策略"),
+            b("status", "显示当前会话状态"),
+            b("review", "发起代码审查", "[target]"),
+        )
+        "pi" -> listOf(
+            b("compact", "压缩上下文并保留关键状态", "[focus]"),
+            b("clear", "开启新会话 / 清空上下文"),
+            b("model", "切换可用模型", "<model>"),
+            b("tree", "浏览对话分支树"),
+            b("reload", "重载扩展与技能配置"),
+        )
+        else -> listOf(
+            b("compact", "压缩上下文摘要", "[focus]"),
+            b("clear", "清空当前会话上下文"),
+            b("status", "查看会话状态"),
+            b("help", "显示内置命令帮助"),
+        )
+    }
+}
 
 sealed interface AuthNavEvent {
     data object Idle : AuthNavEvent
@@ -344,12 +414,19 @@ class SessionViewModel @Inject constructor(
     private val _toast = MutableStateFlow<String?>(null)
     val toast: StateFlow<String?> = _toast.asStateFlow()
 
+    private val _fileSuggestions = MutableStateFlow<List<WorkspaceFileSuggestion>>(emptyList())
+    val fileSuggestions: StateFlow<List<WorkspaceFileSuggestion>> = _fileSuggestions.asStateFlow()
+
+    private val _slashCommands = MutableStateFlow<List<SlashCommandSuggestion>>(emptyList())
+    val slashCommands: StateFlow<List<SlashCommandSuggestion>> = _slashCommands.asStateFlow()
+
     private var bridgeId: String = ""
     private var sid: String = ""
     private var tool: String = ""
     private var convId: String = ""
     private var structured: Boolean = true
     private var activeJob: Job? = null
+    private var fileSearchJob: Job? = null
     private var lastPresenceSentMs = 0L
 
     fun attach(bridgeId: String, sid: String, tool: String, convId: String, structuredHistory: Boolean) {
@@ -359,9 +436,11 @@ class SessionViewModel @Inject constructor(
         this.tool = tool
         this.convId = convId
         this.structured = structuredHistory
+        _slashCommands.value = coreBuiltinSlashCommands(tool)
 
         activeJob?.cancel()
         activeJob = viewModelScope.launch {
+            launch { refreshCommands() }
             if (structuredHistory && convId.isNotBlank()) {
                 launch { repo.observeMessages(bridgeId, convId).collect { _messages.value = it } }
                 runCatching {
@@ -502,6 +581,49 @@ class SessionViewModel @Inject constructor(
 
     fun clearToast() {
         _toast.value = null
+    }
+
+    fun searchWorkspaceFiles(query: String) {
+        fileSearchJob?.cancel()
+        if (bridgeId.isBlank() || sid.isBlank()) return
+        fileSearchJob = viewModelScope.launch {
+            delay(160)
+            runCatching { repo.listFiles(bridgeId, sid, query.trim(), limit = 40) }
+                .onSuccess { list ->
+                    _fileSuggestions.value = list.map {
+                        WorkspaceFileSuggestion(
+                            relPath = it.rel_path,
+                            isDir = it.is_dir,
+                            sizeBytes = it.size_bytes,
+                        )
+                    }
+                }
+        }
+    }
+
+    private suspend fun refreshCommands() {
+        if (bridgeId.isBlank() || sid.isBlank()) return
+        val remote = runCatching { repo.listCommands(bridgeId, sid, tool) }.getOrNull().orEmpty()
+        if (remote.isEmpty()) return
+        val mapped = remote.map { cmd ->
+            val src = when (cmd.source) {
+                SlashCommandSource.SLASH_COMMAND_SOURCE_SKILL -> SlashCommandSourceUi.SKILL
+                SlashCommandSource.SLASH_COMMAND_SOURCE_PROJECT -> SlashCommandSourceUi.PROJECT
+                SlashCommandSource.SLASH_COMMAND_SOURCE_USER -> SlashCommandSourceUi.USER
+                SlashCommandSource.SLASH_COMMAND_SOURCE_PLUGIN -> SlashCommandSourceUi.PLUGIN
+                else -> SlashCommandSourceUi.BUILTIN
+            }
+            SlashCommandSuggestion(
+                name = cmd.name,
+                description = cmd.description,
+                argsHint = cmd.args_hint,
+                source = src,
+            )
+        }
+        val merged = LinkedHashMap<String, SlashCommandSuggestion>()
+        for (c in coreBuiltinSlashCommands(tool)) merged[c.name.lowercase()] = c
+        for (c in mapped) merged.putIfAbsent(c.name.lowercase(), c)
+        _slashCommands.value = merged.values.toList()
     }
 
     override fun onCleared() {
