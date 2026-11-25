@@ -1,11 +1,15 @@
 package dev.ddgrcf.sidekick
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import dev.ddgrcf.sidekick.core.ansi.AnsiParser
 import dev.ddgrcf.sidekick.core.relay.ConnectionState
@@ -15,6 +19,7 @@ import dev.ddgrcf.sidekick.core.store.SessionEntity
 import dev.ddgrcf.sidekick.data.UiPart
 import dev.ddgrcf.sidekick.proto.v1.Key
 import dev.ddgrcf.sidekick.ui.BridgeContent
+import dev.ddgrcf.sidekick.ui.DemoPreviewFlow
 import dev.ddgrcf.sidekick.ui.HomeContent
 import dev.ddgrcf.sidekick.ui.LoginContent
 import dev.ddgrcf.sidekick.ui.SessionContent
@@ -193,9 +198,9 @@ class AppUiTest {
         }
         composeRule.onNodeWithText("Chat").assertIsDisplayed()
         composeRule.onNodeWithText("Terminal").assertIsDisplayed()
-        composeRule.onNodeWithText("kotlin").assertIsDisplayed()
-        composeRule.onNodeWithText("val x = 1").assertIsDisplayed()
-        composeRule.onNodeWithText("bash (DONE)").assertIsDisplayed()
+        composeRule.onNodeWithText("kotlin").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("val x = 1").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("bash (DONE)").performScrollTo().assertIsDisplayed()
     }
 
     @Test
@@ -242,5 +247,53 @@ class AppUiTest {
         composeRule.onNodeWithText("voice.ogg").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("clip.mp4").assertIsDisplayed()
         composeRule.onNodeWithText("3.0 MiB · Blob").assertIsDisplayed()
+    }
+
+    @Test
+    fun demoPreviewFlowNavigatesToSessionAndSendsMessage() {
+        var currentTheme = "dark"
+        composeRule.setContent {
+            SidekickTheme(darkTheme = true) {
+                DemoPreviewFlow(
+                    themeModeKey = currentTheme,
+                    onSetThemeMode = { currentTheme = it },
+                    onExit = {},
+                )
+            }
+        }
+        composeRule.onNodeWithText("mac-studio").performClick()
+        composeRule.onNodeWithText("Refactor Noise chunking & E2E media").performClick()
+        composeRule.onNodeWithText("Chat").assertIsDisplayed()
+        composeRule.onNodeWithTag("chat_list").performScrollToNode(hasText("ui_preview_render.png"))
+        composeRule.onNodeWithContentDescription("ui_preview_render.png").performClick()
+        composeRule.onNodeWithContentDescription("关闭预览").assertIsDisplayed().performClick()
+        composeRule.onNodeWithText("输入指令…").performTextInput("test demo")
+        composeRule.onNodeWithContentDescription("发送").performClick()
+        composeRule.onNodeWithText("test demo").assertIsDisplayed()
+    }
+
+    @Test
+    fun demoPreviewFlowPreservesNavigationAndDraftAcrossStateRestoration() {
+        val restorationTester = StateRestorationTester(composeRule)
+        restorationTester.setContent {
+            SidekickTheme(darkTheme = true) {
+                DemoPreviewFlow(
+                    themeModeKey = "dark",
+                    onSetThemeMode = {},
+                    onExit = {},
+                )
+            }
+        }
+        composeRule.onNodeWithText("mac-studio").performClick()
+        composeRule.onNodeWithText("Refactor Noise chunking & E2E media").performClick()
+        composeRule.onNodeWithText("Terminal").performClick()
+        composeRule.onNodeWithText("ANSI · 5 行").assertIsDisplayed()
+        composeRule.onNodeWithText("输入指令…").performTextInput("draft kept")
+
+        restorationTester.emulateSavedInstanceStateRestore()
+
+        composeRule.onNodeWithText("Terminal").assertIsDisplayed()
+        composeRule.onNodeWithText("ANSI · 5 行").assertIsDisplayed()
+        composeRule.onNodeWithText("draft kept").assertIsDisplayed()
     }
 }

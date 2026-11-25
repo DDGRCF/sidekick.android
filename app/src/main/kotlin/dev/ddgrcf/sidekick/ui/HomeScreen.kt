@@ -1,12 +1,12 @@
 package dev.ddgrcf.sidekick.ui
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -14,8 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ChevronRight
@@ -23,6 +22,7 @@ import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
@@ -38,9 +38,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -85,6 +84,7 @@ fun HomeContent(
     onOpenBridge: (RelayDevice) -> Unit,
     onOpenPair: () -> Unit,
     onOpenSettings: () -> Unit,
+    isDemo: Boolean = false,
 ) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -96,10 +96,13 @@ fun HomeContent(
                 title = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Text("我的电脑")
                         ConnectionStatusPill(connectionState)
+                        if (isDemo) {
+                            DemoTag()
+                        }
                     }
                 },
                 actions = {
@@ -133,34 +136,64 @@ fun HomeContent(
         ) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 96.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                contentPadding = PaddingValues(top = 4.dp, bottom = 96.dp),
             ) {
                 if (!error.isNullOrBlank()) {
                     item {
-                        ErrorBanner(error)
+                        Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                            ErrorBanner(
+                                message = error,
+                                actionLabel = "重试",
+                                onAction = onRefresh,
+                            )
+                        }
                     }
                 }
-                if (bridges.isEmpty()) {
-                    item {
-                        Spacer(Modifier.height(16.dp))
-                        EmptyStateCard(
-                            icon = Icons.Rounded.Computer,
-                            title = "尚未配对电脑",
-                            subtitle = "在电脑端运行 sidekick-bridge enroll 后，点击下方按钮扫描二维码完成加密配对",
-                            actionLabel = "扫码添加电脑",
-                            onAction = onOpenPair,
-                        )
+                when {
+                    refreshing && bridges.isEmpty() -> {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 64.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 2.5.dp)
+                            }
+                        }
                     }
-                } else {
-                    item {
-                        SectionHeader(title = "已配对工作站", trailing = "${bridges.size} 台")
+                    bridges.isEmpty() && error.isNullOrBlank() -> {
+                        item {
+                            Spacer(Modifier.height(16.dp))
+                            EmptyStateView(
+                                icon = Icons.Rounded.Computer,
+                                title = "尚未配对电脑",
+                                subtitle = "在电脑端运行 sidekick-bridge enroll 后，点击下方按钮扫描二维码完成加密配对",
+                                actionLabel = "扫码添加电脑",
+                                onAction = onOpenPair,
+                            )
+                        }
                     }
-                    items(bridges, key = { it.id }) { dev ->
-                        BridgeDeviceCard(
-                            dev = dev,
-                            onClick = { onOpenBridge(dev) },
-                        )
+                    bridges.isNotEmpty() -> {
+                        item {
+                            SectionHeader(
+                                title = "已配对工作站",
+                                trailing = "${bridges.size} 台",
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            )
+                            HairlineDivider()
+                        }
+                        itemsIndexed(bridges, key = { _, it -> it.id }) { idx, dev ->
+                            BridgeDeviceRow(
+                                dev = dev,
+                                onClick = { onOpenBridge(dev) },
+                            )
+                            if (idx < bridges.lastIndex) {
+                                HairlineDivider(Modifier.padding(start = 54.dp))
+                            } else {
+                                HairlineDivider()
+                            }
+                        }
                     }
                 }
             }
@@ -169,47 +202,53 @@ fun HomeContent(
 }
 
 @Composable
-private fun BridgeDeviceCard(
+internal fun DemoTag(modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(4.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+    ) {
+        Text(
+            text = "DEMO",
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+            color = MaterialTheme.colorScheme.onSecondaryContainer,
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+        )
+    }
+}
+
+@Composable
+private fun BridgeDeviceRow(
     dev: RelayDevice,
     onClick: () -> Unit,
 ) {
     val extras = SidekickThemeExtras.colors
     val fp = SecretStore.fingerprintFromBase64(dev.pubkey)
 
-    SidekickCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .alpha(if (dev.online) 1f else 0.6f),
+    Surface(
         onClick = onClick,
         enabled = dev.online,
-        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        color = MaterialTheme.colorScheme.background,
+        modifier = Modifier.fillMaxWidth(),
     ) {
         Row(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .defaultMinSize(minHeight = 68.dp)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(
-                        if (dev.online) MaterialTheme.colorScheme.primaryContainer
-                        else MaterialTheme.colorScheme.surfaceContainerHigh,
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Computer,
-                    contentDescription = null,
-                    tint = if (dev.online) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(24.dp),
-                )
-            }
+            Icon(
+                imageVector = Icons.Rounded.Computer,
+                contentDescription = null,
+                tint = if (dev.online) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(22.dp),
+            )
 
-            Spacer(Modifier.width(14.dp))
+            Spacer(Modifier.width(16.dp))
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
             ) {
                 Text(
                     text = dev.name,
@@ -227,35 +266,19 @@ private fun BridgeDeviceCard(
             }
 
             Spacer(Modifier.width(8.dp))
-            Surface(
-                shape = RoundedCornerShape(999.dp),
-                color = if (dev.online) extras.successContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(6.dp)
-                            .clip(CircleShape)
-                            .background(if (dev.online) extras.success else MaterialTheme.colorScheme.outline),
-                    )
-                    Text(
-                        text = if (dev.online) "在线" else "离线",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (dev.online) extras.onSuccessContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
+            Text(
+                text = if (dev.online) "在线" else "离线",
+                style = MaterialTheme.typography.labelMedium,
+                color = if (dev.online) extras.success else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
 
             if (dev.online) {
-                Spacer(Modifier.width(4.dp))
+                Spacer(Modifier.width(6.dp))
                 Icon(
                     imageVector = Icons.Rounded.ChevronRight,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
                 )
             }
         }

@@ -1,16 +1,8 @@
 package dev.ddgrcf.sidekick.ui
 
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,23 +10,25 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CloudDone
+import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.Sensors
+import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -44,36 +38,12 @@ import dev.ddgrcf.sidekick.core.relay.ConnectionState
 import dev.ddgrcf.sidekick.ui.theme.SidekickThemeExtras
 
 @Composable
-fun SidekickCard(
-    modifier: Modifier = Modifier,
-    onClick: (() -> Unit)? = null,
-    enabled: Boolean = true,
-    shape: Shape = RoundedCornerShape(16.dp),
-    containerColor: Color = MaterialTheme.colorScheme.surfaceContainerLow,
-    borderColor: Color = SidekickThemeExtras.colors.cardBorder,
-    content: @Composable ColumnScope.() -> Unit,
-) {
-    if (onClick != null) {
-        Surface(
-            onClick = onClick,
-            enabled = enabled,
-            modifier = modifier,
-            shape = shape,
-            color = containerColor,
-            border = BorderStroke(1.dp, borderColor),
-        ) {
-            Column(content = content)
-        }
-    } else {
-        Surface(
-            modifier = modifier,
-            shape = shape,
-            color = containerColor,
-            border = BorderStroke(1.dp, borderColor),
-        ) {
-            Column(content = content)
-        }
-    }
+fun HairlineDivider(modifier: Modifier = Modifier) {
+    HorizontalDivider(
+        modifier = modifier,
+        thickness = 0.5.dp,
+        color = SidekickThemeExtras.colors.hairline,
+    )
 }
 
 @Composable
@@ -83,114 +53,61 @@ fun ConnectionStatusPill(
     modifier: Modifier = Modifier,
 ) {
     val extras = SidekickThemeExtras.colors
-    val dotColor: Color
-    val bgColor: Color
-    val textColor: Color
+    val icon: ImageVector
+    val tint: Color
     val label: String
     when (state) {
         ConnectionState.CONNECTED -> {
-            dotColor = extras.success
-            bgColor = extras.successContainer
-            textColor = extras.onSuccessContainer
+            icon = Icons.Rounded.CloudDone
+            tint = extras.success
             label = "已连接"
         }
         ConnectionState.CONNECTING -> {
-            dotColor = extras.warning
-            bgColor = extras.warningContainer
-            textColor = extras.onWarningContainer
+            icon = Icons.Rounded.Sync
+            tint = extras.warning
             label = "连接中"
         }
         ConnectionState.OFFLINE -> {
-            dotColor = MaterialTheme.colorScheme.error
-            bgColor = MaterialTheme.colorScheme.errorContainer
-            textColor = MaterialTheme.colorScheme.onErrorContainer
+            icon = Icons.Rounded.CloudOff
+            tint = MaterialTheme.colorScheme.error
             label = "离线"
         }
     }
 
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(999.dp),
-        color = bgColor,
+    Row(
+        modifier = modifier.padding(horizontal = if (compact) 4.dp else 6.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = if (compact) 8.dp else 10.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            StatusPulseDot(color = dotColor, pulse = state == ConnectionState.CONNECTING)
-            if (!compact) {
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = textColor,
-                )
-            }
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = tint,
+            modifier = Modifier.size(16.dp),
+        )
+        if (!compact) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = tint,
+            )
         }
     }
 }
 
 @Composable
-private fun StatusPulseDot(color: Color, pulse: Boolean) {
-    if (pulse) {
-        val transition = rememberInfiniteTransition(label = "conn_pulse")
-        val alpha by transition.animateFloat(
-            initialValue = 1f,
-            targetValue = 0.35f,
-            animationSpec = infiniteRepeatable(tween(750), RepeatMode.Reverse),
-            label = "conn_alpha",
-        )
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .graphicsLayer { this.alpha = alpha }
-                .clip(CircleShape)
-                .background(color),
-        )
-    } else {
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(color),
-        )
-    }
-}
-
-@Composable
-fun ConnectionDot(state: ConnectionState) {
-    val extras = SidekickThemeExtras.colors
-    val color = when (state) {
-        ConnectionState.CONNECTED -> extras.success
-        ConnectionState.CONNECTING -> extras.warning
-        ConnectionState.OFFLINE -> MaterialTheme.colorScheme.error
-    }
-    StatusPulseDot(color = color, pulse = state == ConnectionState.CONNECTING)
-}
-
-@Composable
-fun ToolBadge(
+fun ToolIcon(
     tool: String,
-    size: Dp = 40.dp,
+    size: Dp = 22.dp,
     modifier: Modifier = Modifier,
 ) {
     val isDark = SidekickThemeExtras.colors.isDark
-    val fg = ToolVisuals.color(tool, isDark)
-    val bg = ToolVisuals.containerColor(tool, isDark)
-    Box(
-        modifier = modifier
-            .size(size)
-            .clip(RoundedCornerShape(size * 0.28f))
-            .background(bg),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = ToolVisuals.icon(tool),
-            contentDescription = tool,
-            tint = fg,
-            modifier = Modifier.size(size * 0.54f),
-        )
-    }
+    Icon(
+        imageVector = ToolVisuals.icon(tool),
+        contentDescription = tool,
+        tint = ToolVisuals.color(tool, isDark),
+        modifier = modifier.size(size),
+    )
 }
 
 @Composable
@@ -198,19 +115,19 @@ fun LiveBadge(modifier: Modifier = Modifier) {
     val extras = SidekickThemeExtras.colors
     Surface(
         modifier = modifier,
-        shape = RoundedCornerShape(999.dp),
+        shape = RoundedCornerShape(6.dp),
         color = extras.successContainer,
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Box(
-                modifier = Modifier
-                    .size(6.dp)
-                    .clip(CircleShape)
-                    .background(extras.success),
+            Icon(
+                imageVector = Icons.Rounded.Sensors,
+                contentDescription = null,
+                tint = extras.onSuccessContainer,
+                modifier = Modifier.size(12.dp),
             )
             Text(
                 text = "LIVE",
@@ -248,7 +165,7 @@ fun SectionHeader(
 }
 
 @Composable
-fun EmptyStateCard(
+fun EmptyStateView(
     icon: ImageVector,
     title: String,
     subtitle: String,
@@ -256,48 +173,35 @@ fun EmptyStateCard(
     onAction: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
-    SidekickCard(
-        modifier = modifier.fillMaxWidth(),
-        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp, vertical = 40.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 32.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(56.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primaryContainer),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.size(28.dp),
-                )
-            }
-            Spacer(Modifier.height(14.dp))
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                textAlign = TextAlign.Center,
-            )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-            )
-            if (!actionLabel.isNullOrBlank() && onAction != null) {
-                Spacer(Modifier.height(16.dp))
-                FilledTonalButton(onClick = onAction) {
-                    Text(actionLabel)
-                }
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(32.dp),
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = subtitle,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+        if (!actionLabel.isNullOrBlank() && onAction != null) {
+            Spacer(Modifier.height(16.dp))
+            FilledTonalButton(onClick = onAction) {
+                Text(actionLabel)
             }
         }
     }
@@ -306,16 +210,18 @@ fun EmptyStateCard(
 @Composable
 fun ErrorBanner(
     message: String,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(10.dp),
         color = MaterialTheme.colorScheme.errorContainer,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.35f)),
+        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.35f)),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
@@ -329,7 +235,18 @@ fun ErrorBanner(
                 text = message,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.weight(1f),
             )
+            if (!actionLabel.isNullOrBlank() && onAction != null) {
+                TextButton(
+                    onClick = onAction,
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    ),
+                ) {
+                    Text(actionLabel)
+                }
+            }
         }
     }
 }

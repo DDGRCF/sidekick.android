@@ -16,12 +16,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -30,9 +31,11 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -48,8 +51,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -84,6 +90,7 @@ fun PairScreen(
 ) {
     val context = LocalContext.current
     val status by vm.status.collectAsStateWithLifecycle()
+    val isError by vm.isError.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val paired by vm.pairedSuccess.collectAsStateWithLifecycle()
 
@@ -92,9 +99,9 @@ fun PairScreen(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED,
         )
     }
-    var manualMode by remember { mutableStateOf(!hasCameraPerm) }
-    var userCode by remember { mutableStateOf("") }
-    var pskText by remember { mutableStateOf("") }
+    var manualMode by rememberSaveable { mutableStateOf(!hasCameraPerm) }
+    var userCode by rememberSaveable { mutableStateOf("") }
+    var pskText by rememberSaveable { mutableStateOf("") }
 
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         hasCameraPerm = granted
@@ -131,12 +138,14 @@ fun PairScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .navigationBarsPadding()
                 .imePadding()
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+            if (busy) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
             if (hasCameraPerm) {
                 SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                     SegmentedButton(
@@ -166,6 +175,7 @@ fun PairScreen(
                         .clip(RoundedCornerShape(24.dp)),
                 ) {
                     QrScannerView(
+                        canScan = !busy && !paired,
                         onDetected = { raw ->
                             if (!busy) vm.pairWithQrJson(raw)
                         },
@@ -190,67 +200,79 @@ fun PairScreen(
                     }
                 }
 
-                SidekickCard(
-                    modifier = Modifier.fillMaxWidth(),
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Text("如何在电脑生成二维码？", style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            "在工作站终端执行 sidekick-bridge enroll，扫描输出的二维码并核对公钥指纹（Noise XXpsk3）。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    Text("如何在电脑生成二维码？", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "在工作站终端执行 sidekick-bridge enroll，扫描输出的二维码并核对公钥指纹（Noise XXpsk3）。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             } else {
-                SidekickCard(
+                Column(
                     modifier = Modifier.fillMaxWidth(),
-                    containerColor = MaterialTheme.colorScheme.surface,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Column(
-                        modifier = Modifier.padding(18.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    Text("手动配对（6 位配对码 + 一次性 PSK）", style = MaterialTheme.typography.titleSmall)
+                    OutlinedTextField(
+                        value = userCode,
+                        onValueChange = { userCode = it },
+                        label = { Text("6 位配对码 (user_code)") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = pskText,
+                        onValueChange = { pskText = it },
+                        label = { Text("一次性 PSK (base64)") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Button(
+                        onClick = { vm.pairWithManualCode(userCode, pskText) },
+                        enabled = !busy && userCode.isNotBlank(),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 50.dp),
                     ) {
-                        Text("手动配对（6 位配对码 + 一次性 PSK）", style = MaterialTheme.typography.titleSmall)
-                        OutlinedTextField(
-                            value = userCode,
-                            onValueChange = { userCode = it },
-                            label = { Text("6 位配对码 (user_code)") },
-                            singleLine = true,
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        OutlinedTextField(
-                            value = pskText,
-                            onValueChange = { pskText = it },
-                            label = { Text("一次性 PSK (base64)") },
-                            singleLine = true,
-                            shape = RoundedCornerShape(14.dp),
-                            textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Button(
-                            onClick = { vm.pairWithManualCode(userCode, pskText) },
-                            enabled = !busy && userCode.isNotBlank(),
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(50.dp),
-                        ) {
+                        if (busy) {
+                            CircularProgressIndicator(
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.size(18.dp),
+                                color = MaterialTheme.colorScheme.onPrimary,
+                            )
+                        } else {
                             Text("确认配对")
                         }
-                        if (hasCameraPerm) {
-                            OutlinedButton(
-                                onClick = { manualMode = false },
-                                shape = RoundedCornerShape(14.dp),
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Text("切回相机扫码")
-                            }
+                    }
+                    if (hasCameraPerm) {
+                        OutlinedButton(
+                            onClick = { manualMode = false },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 48.dp),
+                        ) {
+                            Text("切回相机扫码")
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = { permLauncher.launch(Manifest.permission.CAMERA) },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 48.dp),
+                        ) {
+                            Text("授予相机权限扫码")
                         }
                     }
                 }
@@ -259,13 +281,12 @@ fun PairScreen(
             if (!status.isNullOrBlank()) {
                 val msg = status!!
                 val extras = SidekickThemeExtras.colors
-                val isError = msg.contains("失败") || msg.contains("无效") || msg.contains("缺少") || msg.contains("禁止")
                 if (isError) {
                     ErrorBanner(msg)
                 } else {
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(10.dp),
                         color = extras.successContainer,
                     ) {
                         Text(
@@ -311,7 +332,6 @@ private fun ScannerOverlay(
         val right = left + boxSize
         val bottom = top + boxSize
 
-        // Four corner brackets
         drawLine(accentColor, Offset(left, top + radius), Offset(left, top + radius + cornerLen), stroke, StrokeCap.Round)
         drawLine(accentColor, Offset(left + radius, top), Offset(left + radius + cornerLen, top), stroke, StrokeCap.Round)
 
@@ -323,26 +343,22 @@ private fun ScannerOverlay(
 
         drawLine(accentColor, Offset(right, bottom - radius), Offset(right, bottom - radius - cornerLen), stroke, StrokeCap.Round)
         drawLine(accentColor, Offset(right - radius, bottom), Offset(right - radius - cornerLen, bottom), stroke, StrokeCap.Round)
-
-        // Subtle scan line
-        drawLine(
-            color = accentColor.copy(alpha = 0.7f),
-            start = Offset(left + 16.dp.toPx(), top + boxSize * 0.5f),
-            end = Offset(right - 16.dp.toPx(), top + boxSize * 0.5f),
-            strokeWidth = 2.dp.toPx(),
-            cap = StrokeCap.Round,
-        )
     }
 }
 
 @OptIn(ExperimentalGetImage::class)
 @Composable
-private fun QrScannerView(onDetected: (String) -> Unit) {
+private fun QrScannerView(
+    canScan: Boolean,
+    onDetected: (String) -> Unit,
+) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val executor = remember { Executors.newSingleThreadExecutor() }
     val scanner = remember { BarcodeScanning.getClient() }
-    var handled by remember { mutableStateOf(false) }
+    val currentCanScan by rememberUpdatedState(canScan)
+    val currentOnDetected by rememberUpdatedState(onDetected)
+    var lastScanMs by remember { mutableLongStateOf(0L) }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -366,14 +382,16 @@ private fun QrScannerView(onDetected: (String) -> Unit) {
                     .build()
                 analysis.setAnalyzer(executor) { imageProxy ->
                     val mediaImage = imageProxy.image
-                    if (mediaImage != null && !handled) {
+                    val now = System.currentTimeMillis()
+                    if (mediaImage != null && currentCanScan && now - lastScanMs > 2000L) {
                         val img = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
                         scanner.process(img)
                             .addOnSuccessListener { barcodes ->
                                 val raw = barcodes.firstOrNull()?.rawValue
-                                if (!raw.isNullOrBlank() && !handled) {
-                                    handled = true
-                                    onDetected(raw)
+                                val ts = System.currentTimeMillis()
+                                if (!raw.isNullOrBlank() && currentCanScan && ts - lastScanMs > 2000L) {
+                                    lastScanMs = ts
+                                    currentOnDetected(raw)
                                 }
                             }
                             .addOnCompleteListener { imageProxy.close() }

@@ -45,6 +45,8 @@ message Frame {
     StopSessionRequest stop_session = 44;
 
     Presence presence = 50;
+    GetMediaRequest get_media = 51;
+    GetMediaResponse media = 52;
   }
 }
 
@@ -199,13 +201,50 @@ message ToolResultPart {
   bool truncated = 4;
 }
 
+enum MediaKind {
+  MEDIA_KIND_UNSPECIFIED = 0;
+  MEDIA_KIND_IMAGE = 1;
+  MEDIA_KIND_VIDEO = 2;
+  MEDIA_KIND_AUDIO = 3;
+}
+
+message MediaPart {
+  string media_id = 1;
+  MediaKind kind = 2;
+  string mime_type = 3;
+  string filename = 4;
+  uint64 size_bytes = 5;
+  uint32 width = 6;
+  uint32 height = 7;
+  uint64 duration_ms = 8;
+  bytes sha256_plain = 9;
+  bytes thumbnail = 10;
+}
+
 message Part {
   oneof kind {
     TextPart text = 1;
     ThinkingPart thinking = 2;
     ToolCallPart tool_call = 3;
     ToolResultPart tool_result = 4;
+    MediaPart media = 5;
   }
+}
+
+message GetMediaRequest {
+  string media_id = 1;
+  uint64 offset = 2;
+  uint32 limit = 3;
+}
+
+message GetMediaResponse {
+  string media_id = 1;
+  string mime_type = 2;
+  bytes data = 3;
+  uint64 total_size = 4;
+  uint64 next_offset = 5;
+  bool eof = 6;
+  bytes sha256_plain = 7;
 }
 
 // Normalized message on the main chain of a conversation.

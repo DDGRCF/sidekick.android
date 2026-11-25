@@ -157,6 +157,12 @@ class AuthViewModel @Inject constructor(
         _navEvent.value = AuthNavEvent.Idle
     }
 
+    fun setThemeMode(mode: String) {
+        viewModelScope.launch {
+            secretStore.updateThemeMode(mode)
+        }
+    }
+
     private suspend fun ensurePhoneDeviceRegistered(base: String, accessToken: String) {
         val prefs = secretStore.current()
         if (prefs.deviceId.isNotBlank()) return
@@ -329,6 +335,12 @@ class SessionViewModel @Inject constructor(
     private val _pendingAttachments = MutableStateFlow<List<PendingAttachment>>(emptyList())
     val pendingAttachments: StateFlow<List<PendingAttachment>> = _pendingAttachments.asStateFlow()
 
+    private val _fetchedMediaPaths = MutableStateFlow<Map<String, String>>(emptyMap())
+    val fetchedMediaPaths: StateFlow<Map<String, String>> = _fetchedMediaPaths.asStateFlow()
+
+    private val _loadingMediaIds = MutableStateFlow<Set<String>>(emptySet())
+    val loadingMediaIds: StateFlow<Set<String>> = _loadingMediaIds.asStateFlow()
+
     private val _toast = MutableStateFlow<String?>(null)
     val toast: StateFlow<String?> = _toast.asStateFlow()
 
@@ -453,6 +465,23 @@ class SessionViewModel @Inject constructor(
         }
     }
 
+    fun fetchMediaIfNeeded(media: UiPart.Media) {
+        if (bridgeId.isBlank() || media.mediaId.isBlank()) return
+        if (_fetchedMediaPaths.value.containsKey(media.mediaId)) return
+        if (_loadingMediaIds.value.contains(media.mediaId)) return
+        _loadingMediaIds.value = _loadingMediaIds.value + media.mediaId
+        viewModelScope.launch {
+            runCatching {
+                repo.fetchMedia(bridgeId, media.mediaId, media.mimeType, media.name)
+            }.onSuccess { file ->
+                _fetchedMediaPaths.value = _fetchedMediaPaths.value + (media.mediaId to file.absolutePath)
+            }.onFailure { e ->
+                _toast.value = e.message ?: "加载原图失败"
+            }
+            _loadingMediaIds.value = _loadingMediaIds.value - media.mediaId
+        }
+    }
+
     fun sendKey(key: Key) {
         if (bridgeId.isBlank() || sid.isBlank()) return
         viewModelScope.launch {
@@ -499,6 +528,9 @@ class PairViewModel @Inject constructor(
     private val _status = MutableStateFlow<String?>(null)
     val status: StateFlow<String?> = _status.asStateFlow()
 
+    private val _isError = MutableStateFlow(false)
+    val isError: StateFlow<Boolean> = _isError.asStateFlow()
+
     private val _pairedSuccess = MutableStateFlow(false)
     val pairedSuccess: StateFlow<Boolean> = _pairedSuccess.asStateFlow()
 
@@ -508,10 +540,12 @@ class PairViewModel @Inject constructor(
     fun pairWithQrJson(rawJson: String) {
         val qr = runCatching { json.decodeFromString<QrPairingPayload>(rawJson) }.getOrNull()
         if (qr == null || qr.v != 1 || qr.eid.isBlank()) {
+            _isError.value = true
             _status.value = "无效的配对二维码"
             return
         }
         if (qr.psk.isBlank()) {
+            _isError.value = true
             _status.value = "二维码缺少 PSK，禁止降级为无 PSK 握手，请重新生成"
             return
         }
@@ -520,6 +554,7 @@ class PairViewModel @Inject constructor(
 
     fun pairWithManualCode(userCode: String, psk: String) {
         if (psk.isBlank()) {
+            _isError.value = true
             _status.value = "缺少一次性 PSK，禁止降级为无 PSK 握手，请重新扫码或输入完整 PSK"
             return
         }
@@ -529,6 +564,7 @@ class PairViewModel @Inject constructor(
     private fun approveAndHandshake(enrollId: String?, userCode: String?, expectedPk: String?, psk: String) {
         viewModelScope.launch {
             _busy.value = true
+            _isError.value = false
             _status.value = "正在配对…"
             runCatching {
                 var deviceId = secretStore.current().deviceId
@@ -549,9 +585,11 @@ class PairViewModel @Inject constructor(
                     pskB64 = psk,
                     expectedBridgePubB64 = expectedPk ?: approved.bridge_pubkey,
                 )
+                _isError.value = false
                 _status.value = "已成功配对 ${approved.bridge_name}"
                 _pairedSuccess.value = true
             }.onFailure { e ->
+                _isError.value = true
                 _status.value = e.message ?: "配对失败"
             }
             _busy.value = false

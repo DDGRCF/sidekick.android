@@ -1,5 +1,5 @@
 <resources>
     <style name="Theme.Sidekick" parent="android:Theme.Material.Light.NoActionBar">
-        <item name="android:windowBackground">#F6F8FC</item>
+        <item name="android:windowBackground">#FFFFFF</item>
     </style>
 </resources>

@@ -3,23 +3,25 @@ package dev.ddgrcf.sidekick.ui
 import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Logout
@@ -39,7 +41,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -58,18 +59,20 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -80,9 +83,10 @@ import dev.ddgrcf.sidekick.core.store.SecretStore
 import dev.ddgrcf.sidekick.ui.theme.SidekickThemeExtras
 import dev.ddgrcf.sidekick.ui.theme.ThemeMode
 import dev.ddgrcf.sidekick.vm.SettingsViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     vm: SettingsViewModel,
@@ -95,15 +99,51 @@ fun SettingsScreen(
     val recoveryCodes by vm.recoveryCodes.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
 
-    var totpCode by remember { mutableStateOf("") }
+    SettingsContent(
+        themeModeKey = prefs.themeMode,
+        relayUrl = prefs.relayUrl,
+        deviceId = prefs.deviceId,
+        devices = devices,
+        otpauthUri = otpauthUri,
+        recoveryCodes = recoveryCodes,
+        message = message,
+        onBack = onBack,
+        onSetThemeMode = vm::setThemeMode,
+        onEnrollTotp = vm::enrollTotp,
+        onConfirmTotp = vm::confirmTotp,
+        onDismissRecoveryCodes = vm::dismissRecoveryCodes,
+        onRevokeDevice = vm::revokeDevice,
+        onLogout = { vm.logout(onLoggedOut) },
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SettingsContent(
+    themeModeKey: String,
+    relayUrl: String,
+    deviceId: String,
+    devices: List<RelayDevice>,
+    otpauthUri: String?,
+    recoveryCodes: List<String>,
+    message: String?,
+    onBack: () -> Unit,
+    onSetThemeMode: (String) -> Unit,
+    onEnrollTotp: () -> Unit,
+    onConfirmTotp: (String) -> Unit,
+    onDismissRecoveryCodes: () -> Unit,
+    onRevokeDevice: (String) -> Unit,
+    onLogout: () -> Unit,
+) {
+    var totpCode by rememberSaveable { mutableStateOf("") }
     var deviceToRevoke by remember { mutableStateOf<RelayDevice?>(null) }
-    var confirmLogout by remember { mutableStateOf(false) }
+    var confirmLogout by rememberSaveable { mutableStateOf(false) }
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     @Suppress("DEPRECATION")
     val clipboard = LocalClipboardManager.current
-    val currentTheme = ThemeMode.fromKey(prefs.themeMode)
+    val currentTheme = ThemeMode.fromKey(themeModeKey)
 
     fun copyWithToast(label: String, value: String) {
         if (value.isBlank()) return
@@ -131,244 +171,258 @@ fun SettingsScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .navigationBarsPadding(),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+                .padding(padding),
+            contentPadding = PaddingValues(top = 8.dp, bottom = 32.dp),
         ) {
             item {
-                SectionHeader("外观与主题")
-                Spacer(Modifier.height(6.dp))
-                SidekickCard(
-                    modifier = Modifier.fillMaxWidth(),
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Palette,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(20.dp),
-                            )
-                            Text("主题模式", style = MaterialTheme.typography.titleMedium)
-                        }
-                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                            ThemeMode.entries.forEachIndexed { idx, mode ->
-                                val icon = when (mode) {
-                                    ThemeMode.SYSTEM -> Icons.Rounded.SettingsBrightness
-                                    ThemeMode.DARK -> Icons.Rounded.DarkMode
-                                    ThemeMode.LIGHT -> Icons.Rounded.LightMode
-                                }
-                                SegmentedButton(
-                                    selected = currentTheme == mode,
-                                    onClick = { vm.setThemeMode(mode.key) },
-                                    shape = SegmentedButtonDefaults.itemShape(index = idx, count = ThemeMode.entries.size),
-                                    icon = {
-                                        Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    },
-                                ) {
-                                    Text(mode.label, maxLines = 1)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            item {
-                SectionHeader("账号与中继")
-                Spacer(Modifier.height(6.dp))
-                SidekickCard(
-                    modifier = Modifier.fillMaxWidth(),
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        InfoCopyRow(
-                            icon = Icons.Rounded.Language,
-                            label = "Relay URL",
-                            value = prefs.relayUrl.ifBlank { "未设置" },
-                            canCopy = prefs.relayUrl.isNotBlank(),
-                            onCopy = { copyWithToast("Relay URL", prefs.relayUrl) },
-                        )
-                        HorizontalDivider(color = SidekickThemeExtras.colors.cardBorder)
-                        InfoCopyRow(
-                            icon = Icons.Rounded.PermDeviceInformation,
-                            label = "Device ID",
-                            value = prefs.deviceId.ifBlank { "未注册" },
-                            canCopy = prefs.deviceId.isNotBlank(),
-                            onCopy = { copyWithToast("Device ID", prefs.deviceId) },
-                        )
-                    }
-                }
-            }
-
-            item {
-                SectionHeader("安全验证")
-                Spacer(Modifier.height(6.dp))
-                SidekickCard(
-                    modifier = Modifier.fillMaxWidth(),
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Shield,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(20.dp),
-                            )
-                            Text("两步验证 (TOTP)", style = MaterialTheme.typography.titleMedium)
-                        }
-                        Text(
-                            "保护账号免受未授权 OAuth 登录，重新绑定会生成新密钥与恢复码。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        if (otpauthUri == null) {
-                            FilledTonalButton(onClick = vm::enrollTotp) {
-                                Text("绑定 / 重置 TOTP")
-                            }
-                        } else {
-                            val bmp = remember(otpauthUri) { renderQrBitmap(otpauthUri!!) }
-                            if (bmp != null) {
-                                Surface(
-                                    color = Color.White,
-                                    shape = RoundedCornerShape(16.dp),
-                                    modifier = Modifier.align(Alignment.CenterHorizontally),
-                                ) {
-                                    Image(
-                                        bitmap = bmp.asImageBitmap(),
-                                        contentDescription = "TOTP QR",
-                                        modifier = Modifier
-                                            .padding(12.dp)
-                                            .size(188.dp),
-                                    )
-                                }
-                            }
-                            OutlinedTextField(
-                                value = totpCode,
-                                onValueChange = { totpCode = it },
-                                label = { Text("输入验证器 6 位验证码确认") },
-                                singleLine = true,
-                                shape = RoundedCornerShape(14.dp),
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            Button(
-                                onClick = { vm.confirmTotp(totpCode) },
-                                enabled = totpCode.isNotBlank(),
-                                shape = RoundedCornerShape(14.dp),
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Text("激活 TOTP")
-                            }
-                        }
-                    }
-                }
-            }
-
-            item {
-                SectionHeader("已注册设备", trailing = "${devices.size}")
-            }
-
-            items(devices, key = { it.id }) { dev ->
-                val isBridge = dev.kind.equals("bridge", ignoreCase = true)
-                val extras = SidekickThemeExtras.colors
-                SidekickCard(
-                    modifier = Modifier.fillMaxWidth(),
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                SectionHeader(
+                    title = "外观与主题",
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Row(
-                        modifier = Modifier.padding(14.dp),
                         verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(38.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                imageVector = if (isBridge) Icons.Rounded.Computer else Icons.Rounded.Smartphone,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(20.dp),
-                            )
-                        }
-                        Spacer(Modifier.width(12.dp))
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(3.dp),
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                Text(
-                                    text = dev.name,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = if (dev.online) extras.successContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
-                                ) {
-                                    Text(
-                                        text = dev.kind,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (dev.online) extras.onSuccessContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                    )
-                                }
+                        Icon(
+                            imageVector = Icons.Rounded.Palette,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Text("主题模式", style = MaterialTheme.typography.titleMedium)
+                    }
+                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                        ThemeMode.entries.forEachIndexed { idx, mode ->
+                            val icon = when (mode) {
+                                ThemeMode.SYSTEM -> Icons.Rounded.SettingsBrightness
+                                ThemeMode.DARK -> Icons.Rounded.DarkMode
+                                ThemeMode.LIGHT -> Icons.Rounded.LightMode
                             }
-                            Text(
-                                text = "指纹 ${SecretStore.fingerprintFromBase64(dev.pubkey)}",
-                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        IconButton(onClick = { deviceToRevoke = dev }) {
-                            Icon(Icons.Rounded.Delete, contentDescription = "吊销", tint = MaterialTheme.colorScheme.error)
+                            SegmentedButton(
+                                selected = currentTheme == mode,
+                                onClick = { onSetThemeMode(mode.key) },
+                                shape = SegmentedButtonDefaults.itemShape(index = idx, count = ThemeMode.entries.size),
+                                icon = {
+                                    Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
+                                },
+                            ) {
+                                Text(mode.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
                         }
                     }
+                }
+                Spacer(Modifier.height(10.dp))
+                HairlineDivider()
+            }
+
+            item {
+                SectionHeader(
+                    title = "账号与中继",
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp),
+                )
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    InfoCopyRow(
+                        icon = Icons.Rounded.Language,
+                        label = "Relay URL",
+                        value = relayUrl.ifBlank { "未设置" },
+                        canCopy = relayUrl.isNotBlank(),
+                        onCopy = { copyWithToast("Relay URL", relayUrl) },
+                    )
+                    HairlineDivider(Modifier.padding(start = 46.dp))
+                    InfoCopyRow(
+                        icon = Icons.Rounded.PermDeviceInformation,
+                        label = "Device ID",
+                        value = deviceId.ifBlank { "未注册" },
+                        canCopy = deviceId.isNotBlank(),
+                        onCopy = { copyWithToast("Device ID", deviceId) },
+                    )
+                    HairlineDivider()
+                }
+            }
+
+            item {
+                SectionHeader(
+                    title = "安全验证",
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp),
+                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Shield,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Text("两步验证 (TOTP)", style = MaterialTheme.typography.titleMedium)
+                    }
+                    Text(
+                        "保护账号免受未授权 OAuth 登录，重新绑定会生成新密钥与恢复码。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (otpauthUri == null) {
+                        FilledTonalButton(
+                            onClick = onEnrollTotp,
+                            modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                        ) {
+                            Text("绑定 / 重置 TOTP")
+                        }
+                    } else {
+                        val bmp by produceState<Bitmap?>(initialValue = null, otpauthUri) {
+                            value = withContext(Dispatchers.IO) { renderQrBitmap(otpauthUri) }
+                        }
+                        if (bmp != null) {
+                            Surface(
+                                color = Color.White,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.align(Alignment.CenterHorizontally),
+                            ) {
+                                Image(
+                                    bitmap = bmp!!.asImageBitmap(),
+                                    contentDescription = "TOTP QR",
+                                    modifier = Modifier
+                                        .padding(12.dp)
+                                        .size(188.dp),
+                                )
+                            }
+                        }
+                        OutlinedTextField(
+                            value = totpCode,
+                            onValueChange = { raw -> totpCode = raw.filter { it.isDigit() }.take(6) },
+                            label = { Text("输入验证器 6 位验证码确认") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Button(
+                            onClick = {
+                                val submitted = totpCode
+                                totpCode = ""
+                                onConfirmTotp(submitted)
+                            },
+                            enabled = totpCode.isNotBlank(),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 48.dp),
+                        ) {
+                            Text("激活 TOTP")
+                        }
+                    }
+                }
+                HairlineDivider()
+            }
+
+            item {
+                SectionHeader(
+                    title = "已注册设备",
+                    trailing = "${devices.size}",
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 6.dp),
+                )
+                if (devices.isNotEmpty()) {
+                    HairlineDivider()
+                } else {
+                    Text(
+                        text = "暂无已注册设备",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    )
+                    HairlineDivider()
+                }
+            }
+
+            itemsIndexed(devices, key = { _, it -> it.id }) { idx, dev ->
+                val isBridge = dev.kind.equals("bridge", ignoreCase = true)
+                val isSelf = deviceId.isNotBlank() && dev.id == deviceId
+                val extras = SidekickThemeExtras.colors
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 60.dp)
+                        .padding(start = 16.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = if (isBridge) Icons.Rounded.Computer else Icons.Rounded.Smartphone,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = dev.name,
+                                style = MaterialTheme.typography.titleSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = if (isSelf) "${dev.kind} · 本机" else dev.kind,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (dev.online) extras.success else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(
+                            text = "指纹 ${SecretStore.fingerprintFromBase64(dev.pubkey)}",
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    IconButton(onClick = { deviceToRevoke = dev }) {
+                        Icon(Icons.Rounded.Delete, contentDescription = "吊销", tint = MaterialTheme.colorScheme.error)
+                    }
+                }
+                if (idx < devices.lastIndex) {
+                    HairlineDivider(Modifier.padding(start = 48.dp))
+                } else {
+                    HairlineDivider()
                 }
             }
 
             if (!message.isNullOrBlank()) {
                 item {
-                    ErrorBanner(message!!)
+                    Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        ErrorBanner(message)
+                    }
                 }
             }
 
             item {
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(20.dp))
                 Button(
                     onClick = { confirmLogout = true },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.error,
                         contentColor = MaterialTheme.colorScheme.onError,
                     ),
-                    shape = RoundedCornerShape(14.dp),
+                    shape = RoundedCornerShape(12.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(50.dp),
+                        .padding(horizontal = 16.dp)
+                        .defaultMinSize(minHeight = 50.dp),
                 ) {
                     Icon(Icons.AutoMirrored.Rounded.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
@@ -387,7 +441,7 @@ fun SettingsScreen(
                 TextButton(
                     onClick = {
                         deviceToRevoke = null
-                        vm.revokeDevice(target.id)
+                        onRevokeDevice(target.id)
                     },
                 ) {
                     Text("确认吊销", color = MaterialTheme.colorScheme.error)
@@ -408,7 +462,7 @@ fun SettingsScreen(
                 TextButton(
                     onClick = {
                         confirmLogout = false
-                        vm.logout(onLoggedOut)
+                        onLogout()
                     },
                 ) {
                     Text("退出登录", color = MaterialTheme.colorScheme.error)
@@ -423,21 +477,24 @@ fun SettingsScreen(
     if (recoveryCodes.isNotEmpty()) {
         val extras = SidekickThemeExtras.colors
         AlertDialog(
-            onDismissRequest = vm::dismissRecoveryCodes,
+            onDismissRequest = onDismissRecoveryCodes,
             title = { Text("一次性恢复码") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("仅显示这一次，请离线妥善保存：", color = MaterialTheme.colorScheme.error)
                     Surface(
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(10.dp),
                         color = extras.codeBg,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Column(
-                            modifier = Modifier.padding(12.dp),
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 240.dp)
+                                .padding(12.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
-                            recoveryCodes.chunked(2).forEach { pair ->
+                            items(recoveryCodes.chunked(2)) { pair ->
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -457,7 +514,7 @@ fun SettingsScreen(
                 }
             },
             confirmButton = {
-                TextButton(onClick = vm::dismissRecoveryCodes) { Text("我已保存") }
+                TextButton(onClick = onDismissRecoveryCodes) { Text("我已保存") }
             },
         )
     }
@@ -472,7 +529,10 @@ private fun InfoCopyRow(
     onCopy: () -> Unit,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .defaultMinSize(minHeight = 56.dp)
+            .padding(start = 16.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
@@ -481,7 +541,7 @@ private fun InfoCopyRow(
             tint = MaterialTheme.colorScheme.primary,
             modifier = Modifier.size(18.dp),
         )
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(

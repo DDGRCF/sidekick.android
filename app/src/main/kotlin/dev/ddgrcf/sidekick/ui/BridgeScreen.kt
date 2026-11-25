@@ -1,12 +1,12 @@
 package dev.ddgrcf.sidekick.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -15,10 +15,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
@@ -29,19 +27,22 @@ import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SecondaryTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -49,6 +50,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -79,6 +81,7 @@ fun BridgeScreen(
     val history by vm.history.collectAsStateWithLifecycle()
     val tools by vm.tools.collectAsStateWithLifecycle()
     val workspaces by vm.workspaces.collectAsStateWithLifecycle()
+    val loading by vm.loading.collectAsStateWithLifecycle()
     val error by vm.error.collectAsStateWithLifecycle()
 
     BridgeContent(
@@ -87,6 +90,7 @@ fun BridgeScreen(
         history = history,
         tools = tools,
         workspaces = workspaces,
+        loading = loading,
         error = error,
         onBack = onBack,
         onRefresh = vm::refresh,
@@ -119,14 +123,16 @@ fun BridgeContent(
     tools: List<ToolInfo>,
     workspaces: List<Workspace>,
     error: String?,
+    loading: Boolean = false,
+    isDemo: Boolean = false,
     onBack: () -> Unit,
     onRefresh: () -> Unit,
     onClickSession: (SessionEntity) -> Unit,
     onClickHistory: (HistoryEntity) -> Unit,
     onStartNew: (tool: String, cwd: String) -> Unit,
 ) {
-    var tabIdx by remember { mutableIntStateOf(0) }
-    var showStartSheet by remember { mutableStateOf(false) }
+    var tabIdx by rememberSaveable { mutableIntStateOf(0) }
+    var showStartSheet by rememberSaveable { mutableStateOf(false) }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -135,7 +141,15 @@ fun BridgeContent(
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background,
                 ),
-                title = { Text(bridgeName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                title = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(bridgeName, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (isDemo) DemoTag()
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回")
@@ -161,63 +175,120 @@ fun BridgeContent(
         },
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
-            SecondaryTabRow(
+            PrimaryTabRow(
                 selectedTabIndex = tabIdx,
                 containerColor = MaterialTheme.colorScheme.background,
+                divider = { HairlineDivider() },
             ) {
                 Tab(selected = tabIdx == 0, onClick = { tabIdx = 0 }, text = { Text("会话 (${sessions.size})") })
                 Tab(selected = tabIdx == 1, onClick = { tabIdx = 1 }, text = { Text("全部历史 (${history.size})") })
             }
-            if (!error.isNullOrBlank()) {
-                Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
-                    ErrorBanner(error)
-                }
+            if (loading) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
-            if (tabIdx == 0) {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 96.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    if (sessions.isEmpty()) {
-                        item {
-                            EmptyStateCard(
-                                icon = Icons.Rounded.Terminal,
-                                title = "暂无运行中会话",
-                                subtitle = if (tools.isNotEmpty() && workspaces.isNotEmpty()) {
-                                    "点击右下角 + 启动一个新会话，或切换到“全部历史”继续之前的对话"
-                                } else {
-                                    "当前未检测到运行中的会话"
-                                },
-                                actionLabel = if (tools.isNotEmpty() && workspaces.isNotEmpty()) "新建会话" else null,
-                                onAction = if (tools.isNotEmpty() && workspaces.isNotEmpty()) {
-                                    { showStartSheet = true }
-                                } else null,
-                            )
+            PullToRefreshBox(
+                isRefreshing = loading,
+                onRefresh = onRefresh,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+            ) {
+                if (tabIdx == 0) {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(top = 4.dp, bottom = 96.dp),
+                    ) {
+                        if (!error.isNullOrBlank()) {
+                            item {
+                                Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+                                    ErrorBanner(error, actionLabel = "重试", onAction = onRefresh)
+                                }
+                            }
                         }
-                    } else {
-                        items(sessions, key = { it.sid }) { s ->
-                            SessionItemCard(session = s, onClick = { onClickSession(s) })
+                        when {
+                            loading && sessions.isEmpty() -> {
+                                item {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 64.dp),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 2.5.dp)
+                                    }
+                                }
+                            }
+                            sessions.isEmpty() && error.isNullOrBlank() -> {
+                                item {
+                                    EmptyStateView(
+                                        icon = Icons.Rounded.Terminal,
+                                        title = "暂无运行中会话",
+                                        subtitle = if (tools.isNotEmpty() && workspaces.isNotEmpty()) {
+                                            "点击右下角 + 启动一个新会话，或切换到“全部历史”继续之前的对话"
+                                        } else {
+                                            "当前未检测到运行中的会话"
+                                        },
+                                        actionLabel = if (tools.isNotEmpty() && workspaces.isNotEmpty()) "新建会话" else null,
+                                        onAction = if (tools.isNotEmpty() && workspaces.isNotEmpty()) {
+                                            { showStartSheet = true }
+                                        } else null,
+                                    )
+                                }
+                            }
+                            sessions.isNotEmpty() -> {
+                                itemsIndexed(sessions, key = { _, it -> it.sid }) { idx, s ->
+                                    SessionItemRow(session = s, onClick = { onClickSession(s) })
+                                    if (idx < sessions.lastIndex) {
+                                        HairlineDivider(Modifier.padding(start = 52.dp))
+                                    } else {
+                                        HairlineDivider()
+                                    }
+                                }
+                            }
                         }
                     }
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 96.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    if (history.isEmpty()) {
-                        item {
-                            EmptyStateCard(
-                                icon = Icons.Rounded.History,
-                                title = "暂无历史记录",
-                                subtitle = "该电脑上尚未发现结构化 AI 会话历史",
-                            )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(top = 4.dp, bottom = 96.dp),
+                    ) {
+                        if (!error.isNullOrBlank()) {
+                            item {
+                                Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+                                    ErrorBanner(error, actionLabel = "重试", onAction = onRefresh)
+                                }
+                            }
                         }
-                    } else {
-                        items(history, key = { it.convId }) { h ->
-                            HistoryItemCard(entry = h, onClick = { onClickHistory(h) })
+                        when {
+                            loading && history.isEmpty() -> {
+                                item {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 64.dp),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 2.5.dp)
+                                    }
+                                }
+                            }
+                            history.isEmpty() && error.isNullOrBlank() -> {
+                                item {
+                                    EmptyStateView(
+                                        icon = Icons.Rounded.History,
+                                        title = "暂无历史记录",
+                                        subtitle = "该电脑上尚未发现结构化 AI 会话历史",
+                                    )
+                                }
+                            }
+                            history.isNotEmpty() -> {
+                                itemsIndexed(history, key = { _, it -> it.convId }) { idx, h ->
+                                    HistoryItemRow(entry = h, onClick = { onClickHistory(h) })
+                                    if (idx < history.lastIndex) {
+                                        HairlineDivider(Modifier.padding(start = 16.dp))
+                                    } else {
+                                        HairlineDivider()
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -239,24 +310,27 @@ fun BridgeContent(
 }
 
 @Composable
-private fun SessionItemCard(
+private fun SessionItemRow(
     session: SessionEntity,
     onClick: () -> Unit,
 ) {
-    SidekickCard(
-        modifier = Modifier.fillMaxWidth(),
+    Surface(
         onClick = onClick,
-        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        color = MaterialTheme.colorScheme.background,
+        modifier = Modifier.fillMaxWidth(),
     ) {
         Row(
-            modifier = Modifier.padding(14.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .defaultMinSize(minHeight = 64.dp)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            ToolBadge(tool = session.tool, size = 40.dp)
-            Spacer(Modifier.width(12.dp))
+            ToolIcon(tool = session.tool, size = 22.dp)
+            Spacer(Modifier.width(14.dp))
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(3.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 Text(
                     text = session.title ?: session.sid,
@@ -275,34 +349,38 @@ private fun SessionItemCard(
             Spacer(Modifier.width(8.dp))
             if (session.live) {
                 LiveBadge()
-                Spacer(Modifier.width(4.dp))
+                Spacer(Modifier.width(6.dp))
             }
             Icon(
                 imageVector = Icons.Rounded.ChevronRight,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
             )
         }
     }
 }
 
 @Composable
-private fun HistoryItemCard(
+private fun HistoryItemRow(
     entry: HistoryEntity,
     onClick: () -> Unit,
 ) {
     val isDark = SidekickThemeExtras.colors.isDark
-    SidekickCard(
-        modifier = Modifier.fillMaxWidth(),
+    Surface(
         onClick = onClick,
-        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        color = MaterialTheme.colorScheme.background,
+        modifier = Modifier.fillMaxWidth(),
     ) {
         Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .defaultMinSize(minHeight = 68.dp)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                ToolBadge(tool = entry.tool, size = 28.dp)
+                ToolIcon(tool = entry.tool, size = 18.dp)
                 Spacer(Modifier.width(8.dp))
                 Text(
                     text = ToolVisuals.label(entry.tool),
@@ -350,126 +428,126 @@ private fun StartSessionSheet(
     var selectedTool by remember { mutableStateOf(tools.firstOrNull()?.name ?: "") }
     var selectedCwd by remember { mutableStateOf(workspaces.firstOrNull()?.cwd ?: "") }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val extras = SidekickThemeExtras.colors
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
     ) {
-        Column(
+        LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+                .navigationBarsPadding(),
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp),
         ) {
-            Text("新建会话", style = MaterialTheme.typography.titleLarge)
-
-            SectionHeader("选择 Tool")
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                tools.forEach { t ->
-                    val selected = selectedTool == t.name
-                    Surface(
-                        onClick = { selectedTool = t.name },
-                        shape = RoundedCornerShape(14.dp),
-                        color = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
-                        else MaterialTheme.colorScheme.surfaceContainerLow,
-                        border = BorderStroke(
-                            width = if (selected) 1.5.dp else 1.dp,
-                            color = if (selected) MaterialTheme.colorScheme.primary else extras.cardBorder,
-                        ),
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            ToolBadge(tool = t.name, size = 36.dp)
-                            Spacer(Modifier.width(12.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(ToolVisuals.label(t.name), style = MaterialTheme.typography.titleSmall)
-                                Text(
-                                    if (t.structured_history) "Chat + Terminal 双视图" else "Terminal 实时交互",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            if (selected) {
-                                Icon(
-                                    imageVector = Icons.Rounded.CheckCircle,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                )
-                            }
-                        }
-                    }
-                }
+            item {
+                Text("新建会话", style = MaterialTheme.typography.titleLarge)
+                Spacer(Modifier.height(14.dp))
+                SectionHeader("选择 Tool", modifier = Modifier.padding(bottom = 6.dp))
+                HairlineDivider()
             }
-
-            SectionHeader("选择工作区")
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                workspaces.forEach { ws ->
-                    val selected = selectedCwd == ws.cwd
-                    val folderName = ws.cwd.trimEnd('/').substringAfterLast('/').ifBlank { ws.cwd }
-                    Surface(
-                        onClick = { selectedCwd = ws.cwd },
-                        shape = RoundedCornerShape(14.dp),
-                        color = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
-                        else MaterialTheme.colorScheme.surfaceContainerLow,
-                        border = BorderStroke(
-                            width = if (selected) 1.5.dp else 1.dp,
-                            color = if (selected) MaterialTheme.colorScheme.primary else extras.cardBorder,
-                        ),
+            itemsIndexed(tools, key = { _, t -> t.name }) { idx, t ->
+                val selected = selectedTool == t.name
+                Surface(
+                    onClick = { selectedTool = t.name },
+                    color = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surface,
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 56.dp)
+                            .padding(horizontal = 4.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Folder,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(24.dp),
+                        ToolIcon(tool = t.name, size = 22.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(ToolVisuals.label(t.name), style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                if (t.structured_history) "Chat + Terminal 双视图" else "Terminal 实时交互",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                            Spacer(Modifier.width(12.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(folderName, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text(
-                                    ws.cwd,
-                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                            if (selected) {
-                                Icon(
-                                    imageVector = Icons.Rounded.CheckCircle,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                )
-                            }
+                        }
+                        if (selected) {
+                            Icon(
+                                imageVector = Icons.Rounded.CheckCircle,
+                                contentDescription = "已选中",
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
                         }
                     }
                 }
+                if (idx < tools.lastIndex) {
+                    HairlineDivider(Modifier.padding(start = 34.dp))
+                } else {
+                    HairlineDivider()
+                }
             }
-
-            Spacer(Modifier.height(4.dp))
-            Button(
-                onClick = { onStart(selectedTool, selectedCwd) },
-                enabled = selectedTool.isNotBlank() && selectedCwd.isNotBlank(),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp),
-            ) {
-                Text("启动会话")
+            item {
+                Spacer(Modifier.height(16.dp))
+                SectionHeader("选择工作区", modifier = Modifier.padding(bottom = 6.dp))
+                HairlineDivider()
+            }
+            itemsIndexed(workspaces, key = { _, ws -> ws.cwd }) { idx, ws ->
+                val selected = selectedCwd == ws.cwd
+                val folderName = ws.cwd.trimEnd('/').substringAfterLast('/').ifBlank { ws.cwd }
+                Surface(
+                    onClick = { selectedCwd = ws.cwd },
+                    color = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surface,
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 56.dp)
+                            .padding(horizontal = 4.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Folder,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(22.dp),
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(folderName, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                ws.cwd,
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        if (selected) {
+                            Icon(
+                                imageVector = Icons.Rounded.CheckCircle,
+                                contentDescription = "已选中",
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+                }
+                if (idx < workspaces.lastIndex) {
+                    HairlineDivider(Modifier.padding(start = 34.dp))
+                } else {
+                    HairlineDivider()
+                }
+            }
+            item {
+                Spacer(Modifier.height(18.dp))
+                Button(
+                    onClick = { onStart(selectedTool, selectedCwd) },
+                    enabled = selectedTool.isNotBlank() && selectedCwd.isNotBlank(),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 24.dp)
+                        .defaultMinSize(minHeight = 52.dp),
+                ) {
+                    Text("启动会话")
+                }
             }
         }
     }

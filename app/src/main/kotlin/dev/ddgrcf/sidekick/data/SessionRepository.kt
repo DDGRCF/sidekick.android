@@ -1,5 +1,7 @@
 package dev.ddgrcf.sidekick.data
 
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.ddgrcf.sidekick.core.relay.ConnectionState
 import dev.ddgrcf.sidekick.core.relay.PeerFrameEvent
 import dev.ddgrcf.sidekick.core.relay.RelaySocketManager
@@ -8,6 +10,7 @@ import dev.ddgrcf.sidekick.core.store.MessageEntity
 import dev.ddgrcf.sidekick.core.store.SessionEntity
 import dev.ddgrcf.sidekick.core.store.SidekickDatabase
 import dev.ddgrcf.sidekick.proto.v1.Frame
+import dev.ddgrcf.sidekick.proto.v1.GetMediaRequest
 import dev.ddgrcf.sidekick.proto.v1.GetMessagesRequest
 import dev.ddgrcf.sidekick.proto.v1.Hello
 import dev.ddgrcf.sidekick.proto.v1.HistoryEntry
@@ -27,12 +30,18 @@ import dev.ddgrcf.sidekick.proto.v1.SubscribeRequest
 import dev.ddgrcf.sidekick.proto.v1.ToolInfo
 import dev.ddgrcf.sidekick.proto.v1.UnsubscribeRequest
 import dev.ddgrcf.sidekick.proto.v1.Workspace
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.security.MessageDigest
+import java.util.Base64
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -61,11 +70,14 @@ sealed interface UiPart {
         val height: Int = 0,
         val durationMs: Long = 0L,
         val localUri: String? = null,
+        val thumbnailB64: String? = null,
+        val sha256Hex: String = "",
     ) : UiPart
 }
 
 @Singleton
 class SessionRepository @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val socketManager: RelaySocketManager,
     private val db: SidekickDatabase,
 ) {
@@ -234,6 +246,53 @@ class SessionRepository @Inject constructor(
         markSessionClosed(bridgeId, sid)
     }
 
+    suspend fun fetchMedia(bridgeId: String, mediaId: String, mimeType: String, filename: String): File =
+        withContext(Dispatchers.IO) {
+            val safeId = mediaId.replace(Regex("[^a-zA-Z0-9_-]"), "_").ifBlank { "media" }
+            val ext = when {
+                mimeType.contains("png") || filename.endsWith(".png", true) -> "png"
+                mimeType.contains("webp") || filename.endsWith(".webp", true) -> "webp"
+                mimeType.contains("gif") || filename.endsWith(".gif", true) -> "gif"
+                else -> "jpg"
+            }
+            val cacheDir = File(context.cacheDir, "sidekick_media").apply { mkdirs() }
+            val target = File(cacheDir, "$safeId.$ext")
+            if (target.exists() && target.length() > 0L) {
+                return@withContext target
+            }
+
+            val out = ByteArrayOutputStream()
+            var offset = 0L
+            var expectedSha: ByteArray? = null
+            while (true) {
+                val resp = socketManager.request(bridgeId) { id ->
+                    Frame(
+                        id = id,
+                        get_media = GetMediaRequest(media_id = mediaId, offset = offset, limit = 262_144),
+                    )
+                }.media ?: error("empty media response")
+                val bytes = resp.data_.toByteArray()
+                out.write(bytes)
+                if (expectedSha == null && resp.sha256_plain.size > 0) {
+                    expectedSha = resp.sha256_plain.toByteArray()
+                }
+                if (resp.eof || bytes.isEmpty()) break
+                offset = resp.next_offset
+            }
+            val fullBytes = out.toByteArray()
+            if (expectedSha != null && expectedSha.isNotEmpty()) {
+                val actualSha = MessageDigest.getInstance("SHA-256").digest(fullBytes)
+                require(actualSha.contentEquals(expectedSha)) { "media sha256 mismatch" }
+            }
+            val tmp = File(cacheDir, "$safeId.$ext.tmp")
+            tmp.writeBytes(fullBytes)
+            if (!tmp.renameTo(target)) {
+                target.writeBytes(fullBytes)
+                tmp.delete()
+            }
+            target
+        }
+
     private fun Session.toEntity(bridgeId: String, updatedMs: Long) = SessionEntity(
         bridgeId = bridgeId,
         sid = id,
@@ -258,6 +317,29 @@ class SessionRepository @Inject constructor(
                 p.tool_result != null -> {
                     val tr = p.tool_result!!
                     UiPart.ToolResult(tr.call_id, tr.output, tr.is_error, tr.truncated)
+                }
+                p.media != null -> {
+                    val mp = p.media!!
+                    val thumb = mp.thumbnail.toByteArray()
+                    val thumbB64 = if (thumb.isNotEmpty()) Base64.getEncoder().encodeToString(thumb) else null
+                    val shaHex = mp.sha256_plain.toByteArray().joinToString("") { "%02x".format(it) }
+                    val kindStr = when (mp.kind.name) {
+                        "MEDIA_KIND_VIDEO" -> "video"
+                        "MEDIA_KIND_AUDIO" -> "audio"
+                        else -> "image"
+                    }
+                    UiPart.Media(
+                        mediaId = mp.media_id,
+                        kind = kindStr,
+                        mimeType = mp.mime_type,
+                        name = mp.filename,
+                        sizeBytes = mp.size_bytes,
+                        width = mp.width,
+                        height = mp.height,
+                        durationMs = mp.duration_ms,
+                        thumbnailB64 = thumbB64,
+                        sha256Hex = shaHex,
+                    )
                 }
                 else -> null
             }
