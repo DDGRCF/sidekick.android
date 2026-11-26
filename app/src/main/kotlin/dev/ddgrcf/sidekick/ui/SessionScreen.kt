@@ -1246,13 +1246,17 @@ private fun AssistantTurn(
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            ToolIcon(tool = tool, size = 18.dp, contentDescription = null)
+            ToolIcon(tool = tool, size = 22.dp, contentDescription = null)
             Text(
                 text = authorLabel,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.titleSmall.copy(
+                    fontSize = 15.sp,
+                    lineHeight = 20.sp,
+                    fontWeight = FontWeight.SemiBold,
+                ),
+                color = MaterialTheme.colorScheme.onBackground,
             )
         }
 
@@ -2923,17 +2927,17 @@ private fun renderInlineAndHeadings(
             val indent = line.takeWhile { it == ' ' }
             when {
                 trimmed.startsWith("### ") -> {
-                    withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontSize = 17.sp)) {
+                    withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontSize = 18.sp)) {
                         appendInlineMarkdown(trimmed.removePrefix("### "), inlineCodeBg, inlineCodeFg, linkColor)
                     }
                 }
                 trimmed.startsWith("## ") -> {
-                    withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontSize = 19.sp)) {
+                    withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontSize = 20.sp)) {
                         appendInlineMarkdown(trimmed.removePrefix("## "), inlineCodeBg, inlineCodeFg, linkColor)
                     }
                 }
                 trimmed.startsWith("# ") -> {
-                    withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontSize = 21.sp)) {
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontSize = 23.sp)) {
                         appendInlineMarkdown(trimmed.removePrefix("# "), inlineCodeBg, inlineCodeFg, linkColor)
                     }
                 }
