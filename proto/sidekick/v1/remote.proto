@@ -51,6 +51,10 @@ message Frame {
     ListFilesResponse files = 54;
     ListCommandsRequest list_commands = 55;
     ListCommandsResponse commands = 56;
+    UploadMediaRequest upload_media = 57;
+    UploadMediaResponse upload_media_resp = 58;
+    HandoverSessionRequest handover_session = 59;
+    HandoverSessionResponse handover_session_resp = 60;
   }
 }
 
@@ -249,6 +253,41 @@ message GetMediaResponse {
   uint64 next_offset = 5;
   bool eof = 6;
   bytes sha256_plain = 7;
+}
+
+message UploadMediaRequest {
+  string upload_id = 1;
+  string session_id = 2;
+  MediaKind kind = 3;
+  string mime_type = 4;
+  string filename = 5;
+  uint64 total_size = 6;
+  uint64 offset = 7;
+  bytes data = 8;
+  bool eof = 9;
+  bytes sha256_plain = 10;
+}
+
+message UploadMediaResponse {
+  string upload_id = 1;
+  uint64 next_offset = 2;
+  bool committed = 3;
+  string rel_path = 4;
+  bytes sha256_plain = 5;
+}
+
+message HandoverSessionRequest {
+  string source_session_id = 1;
+  string target_tool = 2;
+  string target_session_id = 3;
+  string cwd = 4;
+  string handover_note = 5;
+  bool include_context = 6;
+}
+
+message HandoverSessionResponse {
+  Session target_session = 1;
+  string handed_over_prompt = 2;
 }
 
 // Normalized message on the main chain of a conversation.

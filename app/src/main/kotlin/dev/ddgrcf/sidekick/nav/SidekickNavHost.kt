@@ -199,6 +199,21 @@ fun SidekickNavHost(authViewModel: AuthViewModel = hiltViewModel()) {
                     structuredHistory = route.structuredHistory,
                     vm = hiltViewModel(),
                     onBack = popBack,
+                    onOpenSession = { targetSid, targetTool, targetTitle, targetConvId, targetStructured ->
+                        if (backStack.lastOrNull() is AppRoute.SessionRoute) {
+                            backStack.removeLastOrNull()
+                        }
+                        backStack.add(
+                            AppRoute.SessionRoute(
+                                bridgeId = route.bridgeId,
+                                sid = targetSid,
+                                tool = targetTool,
+                                title = targetTitle,
+                                convId = targetConvId,
+                                structuredHistory = targetStructured,
+                            ),
+                        )
+                    },
                 )
             }
             entry<AppRoute.PairRoute> {

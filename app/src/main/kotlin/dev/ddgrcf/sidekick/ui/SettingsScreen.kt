@@ -351,51 +351,68 @@ fun SettingsContent(
                 val isBridge = dev.kind.equals("bridge", ignoreCase = true)
                 val isSelf = deviceId.isNotBlank() && dev.id == deviceId
                 val extras = SidekickThemeExtras.colors
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 60.dp)
-                        .padding(start = 16.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                val mutedVariant = MaterialTheme.colorScheme.onSurfaceVariant
+                val rowBg = if (dev.online) {
+                    MaterialTheme.colorScheme.background
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainer
+                }
+                Surface(
+                    color = rowBg,
+                    modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Icon(
-                        imageVector = if (isBridge) Icons.Rounded.Computer else Icons.Rounded.Smartphone,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp),
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 60.dp)
+                            .padding(start = 16.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        Icon(
+                            imageVector = if (isBridge) Icons.Rounded.Computer else Icons.Rounded.Smartphone,
+                            contentDescription = null,
+                            tint = if (dev.online) MaterialTheme.colorScheme.primary else mutedVariant.copy(alpha = 0.65f),
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
                         ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(
+                                    text = dev.name,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = if (dev.online) MaterialTheme.colorScheme.onSurface else mutedVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    text = buildString {
+                                        append(dev.kind)
+                                        if (isSelf) append(" · 本机")
+                                        if (!dev.online) append(" · 离线")
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (dev.online) extras.success else mutedVariant.copy(alpha = 0.78f),
+                                )
+                            }
                             Text(
-                                text = dev.name,
-                                style = MaterialTheme.typography.titleSmall,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                text = if (isSelf) "${dev.kind} · 本机" else dev.kind,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (dev.online) extras.success else MaterialTheme.colorScheme.onSurfaceVariant,
+                                text = "指纹 ${SecretStore.fingerprintFromBase64(dev.pubkey)}",
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                color = if (dev.online) mutedVariant else mutedVariant.copy(alpha = 0.72f),
                             )
                         }
-                        Text(
-                            text = "指纹 ${SecretStore.fingerprintFromBase64(dev.pubkey)}",
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    IconButton(onClick = { deviceToRevoke = dev }) {
-                        Icon(Icons.Rounded.Delete, contentDescription = "吊销", tint = MaterialTheme.colorScheme.error)
+                        IconButton(onClick = { deviceToRevoke = dev }) {
+                            Icon(Icons.Rounded.Delete, contentDescription = "吊销", tint = MaterialTheme.colorScheme.error)
+                        }
                     }
                 }
-                if (idx < devices.lastIndex) {
+                val nextOnline = devices.getOrNull(idx + 1)?.online
+                if (idx < devices.lastIndex && dev.online && nextOnline == true) {
                     HairlineDivider(Modifier.padding(start = 48.dp))
                 } else {
                     HairlineDivider()

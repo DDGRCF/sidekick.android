@@ -195,7 +195,8 @@ fun HomeContent(
                                 dev = dev,
                                 onClick = { onOpenBridge(dev) },
                             )
-                            if (idx < bridges.lastIndex) {
+                            val nextOnline = bridges.getOrNull(idx + 1)?.online
+                            if (idx < bridges.lastIndex && dev.online && nextOnline == true) {
                                 HairlineDivider(Modifier.padding(start = 54.dp))
                             } else {
                                 HairlineDivider()
@@ -231,11 +232,17 @@ private fun BridgeDeviceRow(
 ) {
     val extras = SidekickThemeExtras.colors
     val fp = SecretStore.fingerprintFromBase64(dev.pubkey)
+    val rowBg = if (dev.online) {
+        MaterialTheme.colorScheme.background
+    } else {
+        MaterialTheme.colorScheme.surfaceContainer
+    }
+    val mutedVariant = MaterialTheme.colorScheme.onSurfaceVariant
 
     Surface(
         onClick = onClick,
         enabled = dev.online,
-        color = MaterialTheme.colorScheme.background,
+        color = rowBg,
         modifier = Modifier.fillMaxWidth(),
     ) {
         Row(
@@ -248,7 +255,7 @@ private fun BridgeDeviceRow(
             Icon(
                 imageVector = Icons.Rounded.Computer,
                 contentDescription = null,
-                tint = if (dev.online) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = if (dev.online) MaterialTheme.colorScheme.primary else mutedVariant.copy(alpha = 0.65f),
                 modifier = Modifier.size(22.dp),
             )
 
@@ -260,6 +267,7 @@ private fun BridgeDeviceRow(
                 Text(
                     text = dev.name,
                     style = MaterialTheme.typography.titleMedium,
+                    color = if (dev.online) MaterialTheme.colorScheme.onSurface else mutedVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -267,7 +275,7 @@ private fun BridgeDeviceRow(
                     Text(
                         text = "指纹 $fp",
                         style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (dev.online) mutedVariant else mutedVariant.copy(alpha = 0.72f),
                     )
                 }
             }
@@ -276,7 +284,7 @@ private fun BridgeDeviceRow(
             Text(
                 text = if (dev.online) "在线" else "离线",
                 style = MaterialTheme.typography.labelMedium,
-                color = if (dev.online) extras.success else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (dev.online) extras.success else mutedVariant.copy(alpha = 0.78f),
             )
 
             if (dev.online) {
@@ -284,7 +292,7 @@ private fun BridgeDeviceRow(
                 Icon(
                     imageVector = Icons.Rounded.ChevronRight,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = mutedVariant,
                     modifier = Modifier.size(20.dp),
                 )
             }

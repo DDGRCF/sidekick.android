@@ -6,9 +6,12 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.Saver
@@ -25,11 +28,19 @@ import dev.ddgrcf.sidekick.data.UiPart
 import dev.ddgrcf.sidekick.vm.MediaKind
 import dev.ddgrcf.sidekick.vm.PendingAttachment
 import dev.ddgrcf.sidekick.core.relay.QrPairingPayload
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.Base64
+import kotlin.math.PI
+import kotlin.math.sin
 
 @Serializable
 private sealed interface DemoPage {
@@ -196,6 +207,14 @@ fun DemoPreviewFlow(
         else DemoSampleData.sampleFiles.filter { it.relPath.lowercase().contains(q) }
     }
 
+    val demoFetchedMediaPaths = remember { mutableStateMapOf<String, String>() }
+    LaunchedEffect(context) {
+        val wavFile = withContext(Dispatchers.IO) { ensureDemoAudioWavFile(context) }
+        if (wavFile != null) {
+            demoFetchedMediaPaths["m-aud-1"] = wavFile.absolutePath
+        }
+    }
+
     BackHandler(enabled = page != DemoPage.Home) {
         page = when (val cur = page) {
             DemoPage.Home -> DemoPage.Home
@@ -269,7 +288,7 @@ fun DemoPreviewFlow(
                         sid = s.sid,
                         tool = s.tool,
                         title = s.title ?: s.sid,
-                        structured = s.tool != "antigravity" && s.tool != "agy",
+                        structured = DemoSampleData.tools.firstOrNull { it.name == s.tool }?.structured_history ?: true,
                     )
                 },
                 onClickHistory = { h ->
@@ -277,7 +296,7 @@ fun DemoPreviewFlow(
                         sid = h.liveSid ?: h.convId,
                         tool = h.tool,
                         title = h.title ?: h.convId,
-                        structured = h.tool != "antigravity" && h.tool != "agy",
+                        structured = DemoSampleData.tools.firstOrNull { it.name == h.tool }?.structured_history ?: true,
                     )
                 },
                 onStartNew = { tool, cwd ->
@@ -285,12 +304,13 @@ fun DemoPreviewFlow(
                         sid = "$tool-demo",
                         tool = tool,
                         title = "$tool · ${cwd.substringAfterLast('/')}",
-                        structured = tool != "antigravity" && tool != "agy",
+                        structured = DemoSampleData.tools.firstOrNull { it.name == tool }?.structured_history ?: true,
                     )
                 },
             )
         }
         is DemoPage.Session -> {
+            key(cur.sid) {
             SessionContent(
                 sessionId = cur.sid,
                 title = cur.title,
@@ -304,8 +324,11 @@ fun DemoPreviewFlow(
                 localTyping = false,
                 isDemo = true,
                 pendingAttachments = pendingAttachments.toList(),
+                fetchedMediaPaths = demoFetchedMediaPaths.toMap(),
                 fileSuggestions = filteredDemoFiles,
                 slashCommands = remember(cur.tool) { DemoSampleData.sampleCommands(cur.tool) },
+                availableTools = DemoSampleData.tools,
+                otherSessions = remember(cur.sid) { DemoSampleData.sessions.filter { it.sid != cur.sid } },
                 onSearchFiles = { fileQuery = it },
                 toast = demoToast,
                 onClearToast = { demoToast = null },
@@ -337,6 +360,7 @@ fun DemoPreviewFlow(
                                         name = a.name,
                                         sizeBytes = a.sizeBytes,
                                         durationMs = a.durationMs,
+                                        localUri = a.uri,
                                         thumbnailB64 = thumb,
                                     ),
                                 )
@@ -363,7 +387,45 @@ fun DemoPreviewFlow(
                 },
                 onSendKey = { key -> demoToast = "演示按键: ${key.name}" },
                 onFocusChanged = {},
+                onHandoverSession = { targetTool, targetSid, note, includeCtx ->
+                    val existing = targetSid?.let { tid -> DemoSampleData.sessions.firstOrNull { it.sid == tid } }
+                    val nextSid = existing?.sid ?: "$targetTool-handover-${messages.size + 1}"
+                    val nextTitle = existing?.title ?: "${ToolVisuals.label(targetTool)} · 接力工作"
+                    val nextStructured = DemoSampleData.tools
+                        .firstOrNull { it.name.equals(targetTool, ignoreCase = true) }
+                        ?.structured_history ?: true
+                    val handoverText = buildString {
+                        append("[已从 ${ToolVisuals.label(cur.tool)} 移交至 ${ToolVisuals.label(targetTool)}]")
+                        if (note.isNotBlank()) {
+                            append("\n")
+                            append(note)
+                        }
+                        if (includeCtx) {
+                            append("\n(已附带最近对话上下文)")
+                        }
+                    }
+                    val nextSeq = (messages.lastOrNull()?.seq ?: 0L) + 1L
+                    messages += MessageEntity(
+                        bridgeId = DemoSampleData.bridges.first().id,
+                        convId = "conv-codex-1",
+                        seq = nextSeq,
+                        role = "ROLE_USER",
+                        partsJson = json.encodeToString(listOf<UiPart>(UiPart.Text(handoverText))),
+                        createdMs = System.currentTimeMillis(),
+                        model = null,
+                    )
+                    screenRevision++
+                    appendedTerminalLines += "\u001B[36m[Handover -> $targetTool] ${note.ifBlank { "附带上下文移交" }}\u001B[0m"
+                    page = DemoPage.Session(
+                        sid = nextSid,
+                        tool = targetTool,
+                        title = nextTitle,
+                        structured = nextStructured,
+                    )
+                    demoToast = "已移交工作至 ${ToolVisuals.label(targetTool)}"
+                },
             )
+            }
         }
         DemoPage.Settings -> {
             SettingsContent(
@@ -401,4 +463,51 @@ private fun readDemoImageThumbB64(context: Context, uriStr: String): String? = r
     val out = ByteArrayOutputStream()
     scaled.compress(Bitmap.CompressFormat.JPEG, 82, out)
     Base64.getEncoder().encodeToString(out.toByteArray())
+}.getOrNull()
+
+private fun ensureDemoAudioWavFile(context: Context): File? = runCatching {
+    val dir = File(context.cacheDir, "sidekick_media").apply { mkdirs() }
+    val outFile = File(dir, "demo_voice_note.wav")
+    if (outFile.exists() && outFile.length() > 1024L) {
+        return@runCatching outFile
+    }
+    val sampleRate = 16_000
+    val durationSec = 3.0
+    val numSamples = (sampleRate * durationSec).toInt()
+    val dataBytes = numSamples * 2
+    val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN).apply {
+        put("RIFF".toByteArray(Charsets.US_ASCII))
+        putInt(36 + dataBytes)
+        put("WAVE".toByteArray(Charsets.US_ASCII))
+        put("fmt ".toByteArray(Charsets.US_ASCII))
+        putInt(16) // PCM chunk size
+        putShort(1) // PCM format
+        putShort(1) // mono
+        putInt(sampleRate)
+        putInt(sampleRate * 2) // byte rate
+        putShort(2) // block align
+        putShort(16) // bits per sample
+        put("data".toByteArray(Charsets.US_ASCII))
+        putInt(dataBytes)
+    }
+    val pcm = ByteBuffer.allocate(dataBytes).order(ByteOrder.LITTLE_ENDIAN)
+    for (i in 0 until numSamples) {
+        val t = i.toDouble() / sampleRate
+        val freq = when {
+            t < 0.9 -> 440.0
+            t < 1.8 -> 554.37
+            else -> 659.25
+        }
+        val localT = (t % 0.9) / 0.9
+        val envelope = sin(PI * localT).coerceAtLeast(0.0)
+        val sample = (sin(2.0 * PI * freq * t) * 0.25 * envelope * Short.MAX_VALUE).toInt()
+            .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+        pcm.putShort(sample.toShort())
+    }
+    FileOutputStream(outFile).use { fos ->
+        fos.write(header.array())
+        fos.write(pcm.array())
+        fos.flush()
+    }
+    outFile
 }.getOrNull()

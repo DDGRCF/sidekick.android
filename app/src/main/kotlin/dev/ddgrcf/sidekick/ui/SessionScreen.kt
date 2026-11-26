@@ -4,8 +4,11 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
+import android.media.MediaPlayer
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.widget.MediaController
+import android.widget.VideoView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -61,6 +64,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
@@ -91,28 +95,34 @@ import androidx.compose.material.icons.rounded.FormatQuote
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.StopCircle
+import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material.icons.rounded.TextDecrease
 import androidx.compose.material.icons.rounded.TextIncrease
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -183,6 +193,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import kotlin.math.roundToInt
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -193,8 +204,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.ddgrcf.sidekick.core.ansi.AnsiLine
 import dev.ddgrcf.sidekick.core.relay.ConnectionState
 import dev.ddgrcf.sidekick.core.store.MessageEntity
+import dev.ddgrcf.sidekick.core.store.SessionEntity
 import dev.ddgrcf.sidekick.data.UiPart
 import dev.ddgrcf.sidekick.proto.v1.Key
+import dev.ddgrcf.sidekick.proto.v1.ToolInfo
 import dev.ddgrcf.sidekick.ui.theme.SidekickThemeExtras
 import dev.ddgrcf.sidekick.vm.MediaKind
 import dev.ddgrcf.sidekick.vm.PendingAttachment
@@ -209,6 +222,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.File
 import java.util.Base64
 import java.util.Locale
 import java.util.UUID
@@ -223,6 +237,7 @@ fun SessionScreen(
     structuredHistory: Boolean,
     vm: SessionViewModel,
     onBack: () -> Unit,
+    onOpenSession: (sid: String, tool: String, title: String, convId: String, structured: Boolean) -> Unit = { _, _, _, _, _ -> },
 ) {
     LaunchedEffect(bridgeId, sid) {
         vm.attach(bridgeId, sid, tool, convId, structuredHistory)
@@ -237,6 +252,9 @@ fun SessionScreen(
     val loadingMediaIds by vm.loadingMediaIds.collectAsStateWithLifecycle()
     val fileSuggestions by vm.fileSuggestions.collectAsStateWithLifecycle()
     val slashCommands by vm.slashCommands.collectAsStateWithLifecycle()
+    val availableTools by vm.availableTools.collectAsStateWithLifecycle()
+    val otherSessions by vm.otherSessions.collectAsStateWithLifecycle()
+    val handoverBusy by vm.handoverBusy.collectAsStateWithLifecycle()
     val toast by vm.toast.collectAsStateWithLifecycle()
 
     SessionContent(
@@ -255,6 +273,9 @@ fun SessionScreen(
         loadingMediaIds = loadingMediaIds,
         fileSuggestions = fileSuggestions,
         slashCommands = slashCommands,
+        availableTools = availableTools,
+        otherSessions = otherSessions,
+        handoverBusy = handoverBusy,
         toast = toast,
         onClearToast = vm::clearToast,
         onBack = onBack,
@@ -267,6 +288,9 @@ fun SessionScreen(
         onRefreshMessages = vm::refreshMessages,
         onStopSession = { vm.stopSession(onBack) },
         onRequestMedia = vm::fetchMediaIfNeeded,
+        onHandoverSession = { targetTool, targetSid, note, includeCtx ->
+            vm.handover(targetTool, targetSid, note, includeCtx, onOpenSession)
+        },
     )
 }
 
@@ -295,23 +319,34 @@ fun SessionContent(
     loadingMediaIds: Set<String> = emptySet(),
     fileSuggestions: List<WorkspaceFileSuggestion> = emptyList(),
     slashCommands: List<SlashCommandSuggestion> = remember(tool) { coreBuiltinSlashCommands(tool) },
+    availableTools: List<ToolInfo> = emptyList(),
+    otherSessions: List<SessionEntity> = emptyList(),
+    handoverBusy: Boolean = false,
     onSearchFiles: (String) -> Unit = {},
     onAddAttachment: (PendingAttachment) -> Unit = {},
     onRemoveAttachment: (String) -> Unit = {},
     onRefreshMessages: () -> Unit = {},
     onStopSession: () -> Unit = {},
     onRequestMedia: (UiPart.Media) -> Unit = {},
+    onHandoverSession: (targetTool: String, targetSid: String?, note: String, includeContext: Boolean) -> Unit = { _, _, _, _ -> },
 ) {
     var tabIdx by rememberSaveable(structuredHistory) { mutableIntStateOf(0) }
     var terminalFontSizeSp by rememberSaveable { mutableIntStateOf(12) }
     var terminalSoftWrap by rememberSaveable { mutableStateOf(true) }
-    var headerExpanded by rememberSaveable { mutableStateOf(true) }
-    var headerPinned by rememberSaveable { mutableStateOf(false) }
+    var headerExpanded by rememberSaveable(sessionId) { mutableStateOf(true) }
+    var headerPinned by rememberSaveable(sessionId) { mutableStateOf(false) }
     var peekTrigger by rememberSaveable { mutableIntStateOf(0) }
     var showOverflow by remember { mutableStateOf(false) }
     var confirmStop by rememberSaveable { mutableStateOf(false) }
+    var showHandoverSheet by rememberSaveable { mutableStateOf(false) }
     val stateJson = remember { Json { ignoreUnknownKeys = true } }
     var lightboxMedia by rememberSaveable(
+        stateSaver = Saver<UiPart.Media?, String>(
+            save = { m -> m?.let { stateJson.encodeToString(it) } ?: "" },
+            restore = { raw -> if (raw.isBlank()) null else runCatching { stateJson.decodeFromString<UiPart.Media>(raw) }.getOrNull() },
+        ),
+    ) { mutableStateOf<UiPart.Media?>(null) }
+    var videoPlayerMedia by rememberSaveable(
         stateSaver = Saver<UiPart.Media?, String>(
             save = { m -> m?.let { stateJson.encodeToString(it) } ?: "" },
             restore = { raw -> if (raw.isBlank()) null else runCatching { stateJson.decodeFromString<UiPart.Media>(raw) }.getOrNull() },
@@ -452,6 +487,7 @@ fun SessionContent(
                 terminalLineCount = screenLines.size,
                 terminalFontSizeSp = terminalFontSizeSp,
                 terminalSoftWrap = terminalSoftWrap,
+                canHandover = availableTools.isNotEmpty() || otherSessions.isNotEmpty(),
                 onToggleExpanded = {
                     if (showExpandedHeader) {
                         headerPinned = false
@@ -466,6 +502,7 @@ fun SessionContent(
                 onOpenOverflow = { showOverflow = true },
                 onDismissOverflow = { showOverflow = false },
                 onRefreshMessages = onRefreshMessages,
+                onOpenHandover = { showHandoverSheet = true },
                 onCopySessionId = {
                     clipboard.setText(AnnotatedString(sessionId))
                     notify("已复制会话 ID")
@@ -553,7 +590,10 @@ fun SessionContent(
                             onRequestMedia(media)
                             lightboxMedia = media
                         },
-                        onUnsupportedMediaClick = { notify("音视频播放将在后续版本支持") },
+                        onOpenVideo = { media ->
+                            onRequestMedia(media)
+                            videoPlayerMedia = media
+                        },
                         onSwitchToTerminal = { selectTab(1) },
                         modifier = Modifier.fillMaxSize(),
                     )
@@ -599,6 +639,30 @@ fun SessionContent(
             onDismiss = { lightboxMedia = null },
         )
     }
+
+    videoPlayerMedia?.let { media ->
+        VideoPlayerDialog(
+            media = media,
+            resolvedPath = fetchedMediaPaths[media.mediaId],
+            isLoading = loadingMediaIds.contains(media.mediaId),
+            isDemo = isDemo,
+            onDismiss = { videoPlayerMedia = null },
+        )
+    }
+
+    if (showHandoverSheet) {
+        HandoverBottomSheet(
+            sourceTool = tool,
+            availableTools = availableTools,
+            otherSessions = otherSessions,
+            busy = handoverBusy,
+            onDismiss = { showHandoverSheet = false },
+            onSubmit = { targetTool, targetSid, note, includeCtx ->
+                showHandoverSheet = false
+                onHandoverSession(targetTool, targetSid, note, includeCtx)
+            },
+        )
+    }
 }
 
 @Composable
@@ -616,12 +680,14 @@ private fun SessionAdaptiveHeader(
     terminalLineCount: Int,
     terminalFontSizeSp: Int,
     terminalSoftWrap: Boolean,
+    canHandover: Boolean = false,
     onToggleExpanded: () -> Unit,
     onSelectTab: (Int) -> Unit,
     onBack: () -> Unit,
     onOpenOverflow: () -> Unit,
     onDismissOverflow: () -> Unit,
     onRefreshMessages: () -> Unit,
+    onOpenHandover: () -> Unit = {},
     onCopySessionId: () -> Unit,
     onTerminalFontDelta: (Int) -> Unit,
     onToggleTerminalWrap: () -> Unit,
@@ -687,6 +753,16 @@ private fun SessionAdaptiveHeader(
                         expanded = showOverflow,
                         onDismissRequest = onDismissOverflow,
                     ) {
+                        if (canHandover) {
+                            DropdownMenuItem(
+                                text = { Text("移交给其他 Agent") },
+                                leadingIcon = { Icon(Icons.Rounded.SwapHoriz, contentDescription = null) },
+                                onClick = {
+                                    onDismissOverflow()
+                                    onOpenHandover()
+                                },
+                            )
+                        }
                         if (structuredHistory) {
                             DropdownMenuItem(
                                 text = { Text("同步消息历史") },
@@ -944,7 +1020,7 @@ private fun ChatView(
     onQuoteMessage: (String, String) -> Unit,
     onAutoFetchMedia: (UiPart.Media) -> Unit,
     onOpenImage: (UiPart.Media) -> Unit,
-    onUnsupportedMediaClick: () -> Unit,
+    onOpenVideo: (UiPart.Media) -> Unit,
     onSwitchToTerminal: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -1018,10 +1094,11 @@ private fun ChatView(
                         UserPromptTurn(
                             parts = parts,
                             fetchedMediaPaths = fetchedMediaPaths,
+                            onCopyText = onCopyText,
                             onQuote = { excerpt -> onQuoteMessage("你", excerpt) },
                             onAutoFetchMedia = onAutoFetchMedia,
                             onOpenImage = onOpenImage,
-                            onUnsupportedMediaClick = onUnsupportedMediaClick,
+                            onOpenVideo = onOpenVideo,
                         )
                     } else {
                         AssistantTurn(
@@ -1033,7 +1110,7 @@ private fun ChatView(
                             onQuote = { author, excerpt -> onQuoteMessage(author, excerpt) },
                             onAutoFetchMedia = onAutoFetchMedia,
                             onOpenImage = onOpenImage,
-                            onUnsupportedMediaClick = onUnsupportedMediaClick,
+                            onOpenVideo = onOpenVideo,
                         )
                     }
                 }
@@ -1055,10 +1132,11 @@ private fun ChatView(
 private fun UserPromptTurn(
     parts: List<UiPart>,
     fetchedMediaPaths: Map<String, String>,
+    onCopyText: (String, String) -> Unit,
     onQuote: (String) -> Unit,
     onAutoFetchMedia: (UiPart.Media) -> Unit,
     onOpenImage: (UiPart.Media) -> Unit,
-    onUnsupportedMediaClick: () -> Unit,
+    onOpenVideo: (UiPart.Media) -> Unit,
 ) {
     val extras = SidekickThemeExtras.colors
     val textParts = parts.filterIsInstance<UiPart.Text>()
@@ -1068,7 +1146,7 @@ private fun UserPromptTurn(
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.End,
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         mediaParts.forEach { media ->
             Box(modifier = Modifier.widthIn(max = 280.dp)) {
@@ -1077,7 +1155,7 @@ private fun UserPromptTurn(
                     resolvedPath = fetchedMediaPaths[media.mediaId],
                     onAutoFetch = { onAutoFetchMedia(media) },
                     onOpenImage = { onOpenImage(media) },
-                    onUnsupportedMediaClick = onUnsupportedMediaClick,
+                    onOpenVideo = { onOpenVideo(media) },
                 )
             }
         }
@@ -1105,18 +1183,12 @@ private fun UserPromptTurn(
                     }
                 }
             }
-            Box(
-                modifier = Modifier
-                    .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable { onQuote(summarizeExcerpt(userPlainText)) },
-                contentAlignment = Alignment.CenterEnd,
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.FormatQuote,
-                    contentDescription = "引用用户消息",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(16.dp),
+            if (userPlainText.isNotEmpty()) {
+                MessageActionRow(
+                    copyContentDescription = "复制用户消息",
+                    quoteContentDescription = "引用用户消息",
+                    onCopy = { onCopyText(userPlainText, "消息") },
+                    onQuote = { onQuote(summarizeExcerpt(userPlainText)) },
                 )
             }
         }
@@ -1133,7 +1205,7 @@ private fun AssistantTurn(
     onQuote: (String, String) -> Unit,
     onAutoFetchMedia: (UiPart.Media) -> Unit,
     onOpenImage: (UiPart.Media) -> Unit,
-    onUnsupportedMediaClick: () -> Unit,
+    onOpenVideo: (UiPart.Media) -> Unit,
 ) {
     val plainText = remember(parts) {
         parts.filterIsInstance<UiPart.Text>().joinToString("\n\n") { it.text }
@@ -1183,72 +1255,95 @@ private fun AssistantTurn(
                     resolvedPath = fetchedMediaPaths[p.mediaId],
                     onAutoFetch = { onAutoFetchMedia(p) },
                     onOpenImage = { onOpenImage(p) },
-                    onUnsupportedMediaClick = onUnsupportedMediaClick,
+                    onOpenVideo = { onOpenVideo(p) },
                 )
             }
         }
 
         if (plainText.isNotBlank()) {
-            var copiedRecently by remember { mutableStateOf(false) }
-            LaunchedEffect(copiedRecently) {
-                if (copiedRecently) {
-                    delay(1500)
-                    copiedRecently = false
-                }
-            }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Row(
-                    modifier = Modifier
-                        .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable {
-                            onCopyText(plainText, "回复")
-                            copiedRecently = true
-                        }
-                        .padding(end = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                ) {
-                    Icon(
-                        imageVector = if (copiedRecently) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
-                        contentDescription = "复制回复",
-                        tint = if (copiedRecently) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    if (copiedRecently) {
-                        Text(
-                            text = "已复制",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                    }
-                }
-                Row(
-                    modifier = Modifier
-                        .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable { onQuote(authorLabel, summarizeExcerpt(plainText)) }
-                        .padding(horizontal = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.FormatQuote,
-                        contentDescription = "引用回复",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Text(
-                        text = "引用",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
+            MessageActionRow(
+                copyContentDescription = "复制回复",
+                quoteContentDescription = "引用回复",
+                onCopy = { onCopyText(plainText, "回复") },
+                onQuote = { onQuote(authorLabel, summarizeExcerpt(plainText)) },
+            )
         }
+    }
+}
+
+@Composable
+private fun MessageActionRow(
+    copyContentDescription: String,
+    quoteContentDescription: String,
+    onCopy: () -> Unit,
+    onQuote: () -> Unit,
+) {
+    var copiedRecently by remember { mutableStateOf(false) }
+    LaunchedEffect(copiedRecently) {
+        if (copiedRecently) {
+            delay(1500)
+            copiedRecently = false
+        }
+    }
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        MessageActionItem(
+            icon = if (copiedRecently) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
+            label = if (copiedRecently) "已复制" else "复制",
+            contentDescription = copyContentDescription,
+            highlighted = copiedRecently,
+            onClick = {
+                onCopy()
+                copiedRecently = true
+            },
+        )
+        MessageActionItem(
+            icon = Icons.Rounded.FormatQuote,
+            label = "引用",
+            contentDescription = quoteContentDescription,
+            highlighted = false,
+            onClick = onQuote,
+        )
+    }
+}
+
+@Composable
+private fun MessageActionItem(
+    icon: ImageVector,
+    label: String,
+    contentDescription: String,
+    highlighted: Boolean,
+    onClick: () -> Unit,
+) {
+    val tint = if (highlighted) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Row(
+        modifier = Modifier
+            .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = tint,
+            modifier = Modifier.size(15.dp),
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = tint,
+            maxLines = 1,
+        )
     }
 }
 
@@ -1412,7 +1507,7 @@ private fun MediaPartCard(
     resolvedPath: String?,
     onAutoFetch: () -> Unit,
     onOpenImage: () -> Unit,
-    onUnsupportedMediaClick: () -> Unit,
+    onOpenVideo: () -> Unit,
 ) {
     val extras = SidekickThemeExtras.colors
 
@@ -1538,7 +1633,7 @@ private fun MediaPartCard(
             }
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Surface(
-                    onClick = onUnsupportedMediaClick,
+                    onClick = onOpenVideo,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
                     color = extras.terminalBg,
@@ -1619,6 +1714,79 @@ private fun MediaPartCard(
             }
         }
         else -> {
+            val context = LocalContext.current
+            val audioPath = resolvedPath ?: media.localUri?.takeIf { it.startsWith("/") }
+            val audioUri = media.localUri?.takeIf { it.startsWith("content://") }?.let { Uri.parse(it) }
+            val hasSource = !audioPath.isNullOrBlank() || audioUri != null
+            var isPlaying by remember(media.mediaId) { mutableStateOf(false) }
+            var pendingPlay by remember(media.mediaId) { mutableStateOf(false) }
+            var totalMs by remember(media.mediaId) { mutableStateOf(media.durationMs) }
+            var positionMs by remember(media.mediaId) { mutableStateOf(0L) }
+            var player by remember(media.mediaId) { mutableStateOf<MediaPlayer?>(null) }
+
+            DisposableEffect(audioPath, audioUri) {
+                var created: MediaPlayer? = null
+                if (hasSource) {
+                    runCatching {
+                        val mp = MediaPlayer().apply {
+                            when {
+                                !audioPath.isNullOrBlank() -> setDataSource(audioPath)
+                                audioUri != null -> setDataSource(context, audioUri)
+                            }
+                            setOnPreparedListener { ready ->
+                                val d = ready.duration.toLong()
+                                if (d > 0L) totalMs = d
+                                if (pendingPlay) {
+                                    pendingPlay = false
+                                    isPlaying = true
+                                    runCatching { ready.start() }
+                                }
+                            }
+                            setOnCompletionListener {
+                                isPlaying = false
+                                positionMs = 0L
+                            }
+                            setOnErrorListener { _, _, _ ->
+                                isPlaying = false
+                                pendingPlay = false
+                                true
+                            }
+                            prepareAsync()
+                        }
+                        created = mp
+                        player = mp
+                    }.onFailure {
+                        pendingPlay = false
+                        isPlaying = false
+                    }
+                }
+                onDispose {
+                    isPlaying = false
+                    player = null
+                    runCatching {
+                        created?.stop()
+                    }
+                    runCatching {
+                        created?.release()
+                    }
+                }
+            }
+
+            LaunchedEffect(isPlaying, player) {
+                while (isPlaying) {
+                    delay(150L)
+                    val mp = player ?: break
+                    val active = runCatching { mp.isPlaying }.getOrDefault(false)
+                    val cur = runCatching { mp.currentPosition.toLong() }.getOrDefault(positionMs)
+                    positionMs = cur
+                    if (!active && cur >= totalMs && totalMs > 0L) {
+                        isPlaying = false
+                    }
+                }
+            }
+
+            val progress = if (totalMs > 0L) (positionMs.toFloat() / totalMs.toFloat()).coerceIn(0f, 1f) else 0f
+
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
@@ -1633,7 +1801,21 @@ private fun MediaPartCard(
                         modifier = Modifier
                             .size(48.dp)
                             .clip(CircleShape)
-                            .clickable(onClick = onUnsupportedMediaClick),
+                            .clickable {
+                                if (!hasSource) {
+                                    pendingPlay = true
+                                    onAutoFetch()
+                                    return@clickable
+                                }
+                                val mp = player ?: return@clickable
+                                if (isPlaying) {
+                                    runCatching { mp.pause() }
+                                    isPlaying = false
+                                } else {
+                                    runCatching { mp.start() }
+                                    isPlaying = true
+                                }
+                            },
                         contentAlignment = Alignment.Center,
                     ) {
                         Surface(
@@ -1642,12 +1824,20 @@ private fun MediaPartCard(
                             modifier = Modifier.size(34.dp),
                         ) {
                             Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Rounded.PlayArrow,
-                                    contentDescription = "音频预览",
-                                    tint = MaterialTheme.colorScheme.onPrimary,
-                                    modifier = Modifier.size(18.dp),
-                                )
+                                if (pendingPlay && !hasSource) {
+                                    CircularProgressIndicator(
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.onPrimary,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                        contentDescription = if (isPlaying) "暂停音频" else "播放音频",
+                                        tint = MaterialTheme.colorScheme.onPrimary,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
                             }
                         }
                     }
@@ -1664,15 +1854,19 @@ private fun MediaPartCard(
                         AudioWaveformBars(
                             accent = MaterialTheme.colorScheme.primary,
                             track = MaterialTheme.colorScheme.surfaceContainerHighest,
-                            active = false,
+                            active = isPlaying,
+                            progress = progress,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(14.dp),
                         )
                     }
                     Text(
-                        text = if (media.durationMs > 0L) formatDuration(media.durationMs)
-                        else formatByteSize(media.sizeBytes),
+                        text = when {
+                            isPlaying && totalMs > 0L -> "${formatDuration(positionMs)} / ${formatDuration(totalMs)}"
+                            totalMs > 0L -> formatDuration(totalMs)
+                            else -> formatByteSize(media.sizeBytes)
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1687,6 +1881,7 @@ private fun AudioWaveformBars(
     accent: Color,
     track: Color,
     active: Boolean,
+    progress: Float = 0.5f,
     modifier: Modifier = Modifier,
 ) {
     Canvas(modifier = modifier) {
@@ -1698,13 +1893,370 @@ private fun AudioWaveformBars(
             val h = size.height * ratio
             val x = idx * (barWidth + gap)
             val y = (size.height - h) / 2f
-            val barColor = if (active || idx < count / 2) accent else track
+            val threshold = (idx + 1).toFloat() / count
+            val barColor = if (active) {
+                if (threshold <= progress + 0.04f) accent else track
+            } else {
+                if (progress > 0.01f && threshold <= progress + 0.04f) accent else track
+            }
             drawRoundRect(
                 color = barColor,
                 topLeft = Offset(x, y),
                 size = Size(barWidth, h),
                 cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f),
             )
+        }
+    }
+}
+
+@Composable
+private fun VideoPlayerDialog(
+    media: UiPart.Media,
+    resolvedPath: String?,
+    isLoading: Boolean,
+    isDemo: Boolean,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val localPath = resolvedPath ?: media.localUri?.takeIf { it.startsWith("/") }
+    val contentUri = media.localUri?.takeIf { it.startsWith("content://") }?.let { Uri.parse(it) }
+    val hasPlayableSource = !localPath.isNullOrBlank() || contentUri != null
+    var isPrepared by remember(localPath, contentUri) { mutableStateOf(false) }
+    var playbackError by remember(localPath, contentUri) { mutableStateOf(false) }
+    var videoViewRef by remember { mutableStateOf<VideoView?>(null) }
+
+    val posterBmp by produceState<ImageBitmap?>(
+        initialValue = null,
+        localPath,
+        media.localUri,
+        media.thumbnailB64,
+    ) {
+        value = withContext(Dispatchers.IO) {
+            decodeVideoPosterBitmap(context, localPath, media.localUri, media.thumbnailB64)
+        }
+    }
+
+    DisposableEffect(videoViewRef) {
+        onDispose {
+            runCatching { videoViewRef?.stopPlayback() }
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.96f)),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 12.dp, vertical = 72.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (hasPlayableSource && !playbackError) {
+                    AndroidView(
+                        factory = { ctx ->
+                            VideoView(ctx).apply {
+                                val controller = MediaController(ctx)
+                                controller.setAnchorView(this)
+                                setMediaController(controller)
+                                setOnPreparedListener { mp ->
+                                    isPrepared = true
+                                    mp.isLooping = false
+                                    runCatching { start() }
+                                }
+                                setOnErrorListener { _, _, _ ->
+                                    playbackError = true
+                                    true
+                                }
+                                runCatching {
+                                    when {
+                                        !localPath.isNullOrBlank() -> setVideoPath(localPath)
+                                        contentUri != null -> setVideoURI(contentUri)
+                                    }
+                                }
+                                videoViewRef = this
+                            }
+                        },
+                        update = { view ->
+                            videoViewRef = view
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(16f / 9f)
+                            .clip(RoundedCornerShape(12.dp)),
+                    )
+                }
+
+                if (!hasPlayableSource || !isPrepared || playbackError) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(16f / 9f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color.Black),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (posterBmp != null) {
+                            Image(
+                                bitmap = posterBmp!!,
+                                contentDescription = media.name,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color.Black.copy(alpha = 0.45f)),
+                            )
+                        }
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.padding(horizontal = 20.dp),
+                        ) {
+                            if (isLoading) {
+                                CircularProgressIndicator(
+                                    strokeWidth = 2.5.dp,
+                                    color = MaterialTheme.colorScheme.secondary,
+                                    modifier = Modifier.size(32.dp),
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Rounded.Videocam,
+                                    contentDescription = media.name,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(44.dp),
+                                )
+                            }
+                            Text(
+                                text = when {
+                                    playbackError -> "暂无法解码该视频格式"
+                                    isLoading -> "正在加密拉取视频…"
+                                    hasPlayableSource -> "正在缓冲视频…"
+                                    isDemo -> "演示视频预览（真机连接或本地选取视频可直接播放）"
+                                    else -> "等待从主机加密拉取视频…"
+                                },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = Color.White,
+                            )
+                        }
+                    }
+                }
+            }
+
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = 0.65f))
+                    .padding(horizontal = 20.dp, vertical = 14.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = media.name.ifBlank { "视频播放" },
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White,
+                )
+                Text(
+                    text = listOfNotNull(
+                        media.mimeType.ifBlank { null },
+                        if (media.durationMs > 0) formatDuration(media.durationMs) else null,
+                        if (media.sizeBytes > 0) formatByteSize(media.sizeBytes) else null,
+                        if (hasPlayableSource && !playbackError) "已解密播放" else null,
+                    ).joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.8f),
+                )
+            }
+
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(16.dp),
+            ) {
+                Icon(Icons.Rounded.Close, contentDescription = "关闭视频", tint = Color.White)
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun HandoverBottomSheet(
+    sourceTool: String,
+    availableTools: List<ToolInfo>,
+    otherSessions: List<SessionEntity>,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onSubmit: (targetTool: String, targetSid: String?, note: String, includeContext: Boolean) -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val selectableTools = remember(availableTools, otherSessions) {
+        if (availableTools.isNotEmpty()) availableTools
+        else otherSessions.map { it.tool }.distinct().map { ToolInfo(name = it, structured_history = true) }
+    }
+    var selectedTool by remember(sourceTool, selectableTools) {
+        mutableStateOf(
+            selectableTools.firstOrNull { !it.name.equals(sourceTool, ignoreCase = true) }?.name
+                ?: selectableTools.firstOrNull()?.name.orEmpty(),
+        )
+    }
+    var selectedTargetSid by remember { mutableStateOf<String?>(null) }
+    var note by rememberSaveable { mutableStateOf("") }
+    var includeContext by rememberSaveable { mutableStateOf(true) }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .imePadding()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("移交给同机其他 Agent", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    text = "将当前 ${ToolVisuals.label(sourceTool)} 会话的进展与指令交接给同机器上的另一个 Agent",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            if (selectableTools.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "目标 Agent（新建同目录会话）",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(selectableTools, key = { it.name }) { t ->
+                            val isSelected = selectedTargetSid == null && selectedTool.equals(t.name, ignoreCase = true)
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = {
+                                    selectedTargetSid = null
+                                    selectedTool = t.name
+                                },
+                                label = { Text(ToolVisuals.label(t.name)) },
+                                leadingIcon = { ToolIcon(tool = t.name, size = 18.dp, contentDescription = null) },
+                                modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (otherSessions.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "或注入到同机运行中会话",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(otherSessions, key = { it.sid }) { sess ->
+                            val isSelected = selectedTargetSid == sess.sid
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = {
+                                    if (isSelected) {
+                                        selectedTargetSid = null
+                                    } else {
+                                        selectedTargetSid = sess.sid
+                                        selectedTool = sess.tool
+                                    }
+                                },
+                                label = {
+                                    val desc = sess.title?.take(12) ?: sess.sid.take(8)
+                                    Text("${ToolVisuals.label(sess.tool)} · $desc")
+                                },
+                                leadingIcon = { ToolIcon(tool = sess.tool, size = 18.dp, contentDescription = null) },
+                                modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                            )
+                        }
+                    }
+                }
+            }
+
+            OutlinedTextField(
+                value = note,
+                onValueChange = { note = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("移交内容与指令") },
+                placeholder = { Text("说明当前已完成工作、关键约束、待办事项或需要继续处理的文件…") },
+                minLines = 2,
+                maxLines = 5,
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = 48.dp)
+                    .clickable { includeContext = !includeContext },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text("自动附带最近对话 / 终端摘要", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        text = "由 Bridge 自动提取最近上下文随指令一并交接",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = includeContext,
+                    onCheckedChange = { includeContext = it },
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                ) {
+                    Text("取消")
+                }
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    onClick = { onSubmit(selectedTool, selectedTargetSid, note.trim(), includeContext) },
+                    enabled = !busy && selectedTool.isNotBlank() && (note.isNotBlank() || includeContext),
+                    modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                ) {
+                    if (busy) {
+                        CircularProgressIndicator(
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text("确认移交")
+                }
+            }
         }
     }
 }
@@ -2996,7 +3548,7 @@ private fun SessionComposer(
                 MediaPickerTile(
                     icon = Icons.Rounded.Image,
                     title = "图片",
-                    subtitle = "选择本地图片附带到当前消息（预览）",
+                    subtitle = "选择本地图片并端到端加密发送（≤ 16 MiB）",
                     onClick = {
                         showMediaSheet = false
                         imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
@@ -3006,7 +3558,7 @@ private fun SessionComposer(
                 MediaPickerTile(
                     icon = Icons.Rounded.Videocam,
                     title = "视频",
-                    subtitle = "选择本地视频附带到当前消息（预览）",
+                    subtitle = "选择本地视频并端到端加密发送（≤ 16 MiB）",
                     onClick = {
                         showMediaSheet = false
                         videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
@@ -3016,7 +3568,7 @@ private fun SessionComposer(
                 MediaPickerTile(
                     icon = Icons.Rounded.AudioFile,
                     title = "音频",
-                    subtitle = "选择本地音频附带到当前消息（预览）",
+                    subtitle = "选择本地音频并端到端加密发送（≤ 16 MiB）",
                     onClick = {
                         showMediaSheet = false
                         audioPicker.launch("audio/*")

@@ -64,7 +64,7 @@ internal object DemoSampleData {
         ToolInfo(name = "claude", structured_history = true),
         ToolInfo(name = "pi", structured_history = true),
         ToolInfo(name = "devin", structured_history = true),
-        ToolInfo(name = "antigravity", structured_history = false),
+        ToolInfo(name = "antigravity", structured_history = true),
     )
 
     val workspaces = listOf(
@@ -100,8 +100,8 @@ internal object DemoSampleData {
             sid = "antigravity-01de",
             tool = "antigravity",
             cwd = "/home/dev/sidekick.nvim",
-            title = "Live TUI terminal",
-            convId = null,
+            title = "Live TUI & Chat sync",
+            convId = "conv-agy-1",
             live = true,
             lastActivityMs = 1763997000000L,
             updatedMs = 1763997000000L,

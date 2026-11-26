@@ -357,7 +357,7 @@ class BridgeViewModel @Inject constructor(
 
     fun isStructured(tool: String): Boolean {
         val info = _tools.value.firstOrNull { it.name == tool }
-        return info?.structured_history ?: (tool != "antigravity" && tool != "agy")
+        return info?.structured_history ?: true
     }
 
     fun startOrResume(
@@ -420,6 +420,15 @@ class SessionViewModel @Inject constructor(
     private val _slashCommands = MutableStateFlow<List<SlashCommandSuggestion>>(emptyList())
     val slashCommands: StateFlow<List<SlashCommandSuggestion>> = _slashCommands.asStateFlow()
 
+    private val _availableTools = MutableStateFlow<List<ToolInfo>>(emptyList())
+    val availableTools: StateFlow<List<ToolInfo>> = _availableTools.asStateFlow()
+
+    private val _otherSessions = MutableStateFlow<List<SessionEntity>>(emptyList())
+    val otherSessions: StateFlow<List<SessionEntity>> = _otherSessions.asStateFlow()
+
+    private val _handoverBusy = MutableStateFlow(false)
+    val handoverBusy: StateFlow<Boolean> = _handoverBusy.asStateFlow()
+
     private var bridgeId: String = ""
     private var sid: String = ""
     private var tool: String = ""
@@ -441,6 +450,15 @@ class SessionViewModel @Inject constructor(
         activeJob?.cancel()
         activeJob = viewModelScope.launch {
             launch { refreshCommands() }
+            launch {
+                runCatching { repo.hello(bridgeId) }
+                    .onSuccess { (toolsList, _) -> _availableTools.value = toolsList }
+            }
+            launch {
+                repo.observeSessions(bridgeId).collect { list ->
+                    _otherSessions.value = list.filter { it.live && it.sid != sid }
+                }
+            }
             if (structuredHistory && convId.isNotBlank()) {
                 launch { repo.observeMessages(bridgeId, convId).collect { _messages.value = it } }
                 runCatching {
@@ -513,16 +531,51 @@ class SessionViewModel @Inject constructor(
 
     fun sendWithAttachments(text: String, submit: Boolean) {
         val atts = _pendingAttachments.value
-        if (atts.isNotEmpty()) {
-            val tierLabel = if (atts.any { it.usesBlobTier }) "加密 Blob (>2MiB)" else "Noise 直传 (≤2MiB)"
-            _toast.value = "已暂存 ${atts.size} 个媒体附件（$tierLabel），待 P6 媒体传输通道启用后自动加密上传"
-            _pendingAttachments.value = emptyList()
-            if (text.isNotBlank()) {
-                sendInput(text, submit)
-            }
+        if (atts.isEmpty()) {
+            sendInput(text, submit)
             return
         }
-        sendInput(text, submit)
+        val currentBridgeId = bridgeId
+        val currentSid = sid
+        if (currentBridgeId.isBlank() || currentSid.isBlank()) {
+            _toast.value = "当前会话未连接，无法上传附件"
+            return
+        }
+        viewModelScope.launch {
+            _toast.value = "正在加密上传 ${atts.size} 个媒体附件…"
+            val uploadedPaths = mutableListOf<String>()
+            for (att in atts) {
+                val res = runCatching {
+                    repo.uploadMedia(
+                        bridgeId = currentBridgeId,
+                        sid = currentSid,
+                        kind = att.kind.name.lowercase(),
+                        mimeType = att.mimeType,
+                        filename = att.name,
+                        uriString = att.uri,
+                    )
+                }
+                val relPath = res.getOrNull()
+                if (relPath == null) {
+                    val err = res.exceptionOrNull()
+                    _toast.value = "附件上传失败 (${att.name}): ${err?.message ?: "未知错误"}"
+                    return@launch
+                }
+                uploadedPaths += relPath
+            }
+            val uploadedIds = atts.mapTo(HashSet()) { it.id }
+            _pendingAttachments.value = _pendingAttachments.value.filterNot { it.id in uploadedIds }
+            val refs = uploadedPaths.joinToString("\n") { "@$it" }
+            val payload = listOf(text.trim(), refs).filter { it.isNotBlank() }.joinToString("\n")
+            if (payload.isNotBlank()) {
+                runCatching { repo.sendInput(currentBridgeId, currentSid, payload, submit) }
+                    .onFailure { err ->
+                        _toast.value = "附件已上传，但发送指令失败: ${err.message ?: err}"
+                        return@launch
+                    }
+            }
+            _toast.value = "已加密上传 ${uploadedPaths.size} 个媒体附件"
+        }
     }
 
     fun refreshMessages() {
@@ -555,7 +608,7 @@ class SessionViewModel @Inject constructor(
             }.onSuccess { file ->
                 _fetchedMediaPaths.value = _fetchedMediaPaths.value + (media.mediaId to file.absolutePath)
             }.onFailure { e ->
-                _toast.value = e.message ?: "加载原图失败"
+                _toast.value = e.message ?: "加载媒体失败"
             }
             _loadingMediaIds.value = _loadingMediaIds.value - media.mediaId
         }
@@ -581,6 +634,50 @@ class SessionViewModel @Inject constructor(
 
     fun clearToast() {
         _toast.value = null
+    }
+
+    fun handover(
+        targetTool: String,
+        targetSid: String?,
+        note: String,
+        includeContext: Boolean,
+        onNavigated: (sid: String, tool: String, title: String, convId: String, structured: Boolean) -> Unit,
+    ) {
+        val currentBridgeId = bridgeId
+        val currentSid = sid
+        if (currentBridgeId.isBlank() || currentSid.isBlank() || _handoverBusy.value) return
+        viewModelScope.launch {
+            _handoverBusy.value = true
+            runCatching {
+                repo.handoverSession(
+                    bridgeId = currentBridgeId,
+                    sourceSid = currentSid,
+                    targetTool = targetTool,
+                    targetSid = targetSid,
+                    handoverNote = note,
+                    includeContext = includeContext,
+                )
+            }.onSuccess { target ->
+                if (target != null) {
+                    val targetStructured = _availableTools.value
+                        .firstOrNull { it.name.equals(target.tool, ignoreCase = true) }
+                        ?.structured_history ?: true
+                    _toast.value = "已移交工作至 ${target.tool}"
+                    onNavigated(
+                        target.id,
+                        target.tool,
+                        target.title.ifBlank { "${target.tool} · handover" },
+                        target.conversation?.id.orEmpty(),
+                        targetStructured,
+                    )
+                } else {
+                    _toast.value = "移交已完成，未返回目标会话"
+                }
+            }.onFailure { err ->
+                _toast.value = "移交失败: ${err.message ?: err}"
+            }
+            _handoverBusy.value = false
+        }
     }
 
     fun searchWorkspaceFiles(query: String) {

@@ -1,6 +1,7 @@
 package dev.ddgrcf.sidekick.data
 
 import android.content.Context
+import android.net.Uri
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.ddgrcf.sidekick.core.relay.ConnectionState
 import dev.ddgrcf.sidekick.core.relay.PeerFrameEvent
@@ -13,6 +14,7 @@ import dev.ddgrcf.sidekick.proto.v1.FileEntry
 import dev.ddgrcf.sidekick.proto.v1.Frame
 import dev.ddgrcf.sidekick.proto.v1.GetMediaRequest
 import dev.ddgrcf.sidekick.proto.v1.GetMessagesRequest
+import dev.ddgrcf.sidekick.proto.v1.HandoverSessionRequest
 import dev.ddgrcf.sidekick.proto.v1.Hello
 import dev.ddgrcf.sidekick.proto.v1.HistoryEntry
 import dev.ddgrcf.sidekick.proto.v1.InputRequest
@@ -22,6 +24,7 @@ import dev.ddgrcf.sidekick.proto.v1.ListCommandsRequest
 import dev.ddgrcf.sidekick.proto.v1.ListFilesRequest
 import dev.ddgrcf.sidekick.proto.v1.ListHistoryRequest
 import dev.ddgrcf.sidekick.proto.v1.ListSessionsRequest
+import dev.ddgrcf.sidekick.proto.v1.MediaKind as ProtoMediaKind
 import dev.ddgrcf.sidekick.proto.v1.Message
 import dev.ddgrcf.sidekick.proto.v1.Presence
 import dev.ddgrcf.sidekick.proto.v1.PresenceSource
@@ -33,6 +36,7 @@ import dev.ddgrcf.sidekick.proto.v1.Stream
 import dev.ddgrcf.sidekick.proto.v1.SubscribeRequest
 import dev.ddgrcf.sidekick.proto.v1.ToolInfo
 import dev.ddgrcf.sidekick.proto.v1.UnsubscribeRequest
+import dev.ddgrcf.sidekick.proto.v1.UploadMediaRequest
 import dev.ddgrcf.sidekick.proto.v1.Workspace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -42,10 +46,13 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import java.io.ByteArrayOutputStream
+import okio.ByteString.Companion.toByteString
 import java.io.File
+import java.io.FileOutputStream
+import java.io.InputStream
 import java.security.MessageDigest
 import java.util.Base64
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -243,6 +250,33 @@ class SessionRepository @Inject constructor(
         return sess
     }
 
+    suspend fun handoverSession(
+        bridgeId: String,
+        sourceSid: String,
+        targetTool: String,
+        targetSid: String? = null,
+        handoverNote: String,
+        includeContext: Boolean = true,
+    ): Session? {
+        val resp = socketManager.request(bridgeId) { id ->
+            Frame(
+                id = id,
+                handover_session = HandoverSessionRequest(
+                    source_session_id = sourceSid,
+                    target_tool = targetTool,
+                    target_session_id = targetSid.orEmpty(),
+                    handover_note = handoverNote,
+                    include_context = includeContext,
+                ),
+            )
+        }
+        val target = resp.handover_session_resp?.target_session
+        if (target != null) {
+            updateSession(bridgeId, target)
+        }
+        return target
+    }
+
     suspend fun stopSession(bridgeId: String, sid: String) {
         socketManager.request(bridgeId) { id ->
             Frame(id = id, stop_session = StopSessionRequest(session_id = sid))
@@ -273,49 +307,160 @@ class SessionRepository @Inject constructor(
     suspend fun fetchMedia(bridgeId: String, mediaId: String, mimeType: String, filename: String): File =
         withContext(Dispatchers.IO) {
             val safeId = mediaId.replace(Regex("[^a-zA-Z0-9_-]"), "_").ifBlank { "media" }
-            val ext = when {
-                mimeType.contains("png") || filename.endsWith(".png", true) -> "png"
-                mimeType.contains("webp") || filename.endsWith(".webp", true) -> "webp"
-                mimeType.contains("gif") || filename.endsWith(".gif", true) -> "gif"
-                else -> "jpg"
-            }
+            val ext = resolveMediaExtension(mimeType, filename)
             val cacheDir = File(context.cacheDir, "sidekick_media").apply { mkdirs() }
             val target = File(cacheDir, "$safeId.$ext")
             if (target.exists() && target.length() > 0L) {
                 return@withContext target
             }
 
-            val out = ByteArrayOutputStream()
+            val tmp = File(cacheDir, "$safeId.$ext.tmp")
+            val digest = MessageDigest.getInstance("SHA-256")
             var offset = 0L
             var expectedSha: ByteArray? = null
+            try {
+                FileOutputStream(tmp).use { out ->
+                    while (true) {
+                        val resp = socketManager.request(bridgeId) { id ->
+                            Frame(
+                                id = id,
+                                get_media = GetMediaRequest(media_id = mediaId, offset = offset, limit = MEDIA_CHUNK_BYTES),
+                            )
+                        }.media ?: error("empty media response")
+                        val bytes = resp.data_.toByteArray()
+                        if (bytes.isNotEmpty()) {
+                            out.write(bytes)
+                            digest.update(bytes)
+                        }
+                        if (expectedSha == null && resp.sha256_plain.size > 0) {
+                            expectedSha = resp.sha256_plain.toByteArray()
+                        }
+                        if (resp.eof || bytes.isEmpty()) break
+                        offset = resp.next_offset
+                    }
+                    out.flush()
+                }
+                if (expectedSha != null && expectedSha.isNotEmpty()) {
+                    val actualSha = digest.digest()
+                    require(actualSha.contentEquals(expectedSha)) { "media sha256 mismatch" }
+                }
+                if (!tmp.renameTo(target)) {
+                    tmp.copyTo(target, overwrite = true)
+                    tmp.delete()
+                }
+                target
+            } catch (t: Throwable) {
+                tmp.delete()
+                throw t
+            }
+        }
+
+    suspend fun uploadMedia(
+        bridgeId: String,
+        sid: String,
+        kind: String,
+        mimeType: String,
+        filename: String,
+        uriString: String,
+    ): String = withContext(Dispatchers.IO) {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val buf = ByteArray(MEDIA_CHUNK_BYTES)
+        var totalSize = 0L
+        openAttachmentStream(uriString).use { input ->
             while (true) {
+                val n = input.read(buf)
+                if (n <= 0) break
+                totalSize += n
+                require(totalSize <= MAX_UPLOAD_MEDIA_BYTES) { "单个媒体附件不能超过 16 MiB" }
+                digest.update(buf, 0, n)
+            }
+        }
+        require(totalSize > 0L) { "附件为空或无法读取" }
+
+        val shaBytes = digest.digest().toByteString()
+        val uploadId = UUID.randomUUID().toString()
+        val protoKind = when (kind.lowercase()) {
+            "video" -> ProtoMediaKind.MEDIA_KIND_VIDEO
+            "audio" -> ProtoMediaKind.MEDIA_KIND_AUDIO
+            else -> ProtoMediaKind.MEDIA_KIND_IMAGE
+        }
+
+        var offset = 0L
+        var committedPath: String? = null
+        openAttachmentStream(uriString).use { input ->
+            while (offset < totalSize) {
+                val n = input.read(buf)
+                if (n <= 0) break
+                val nextOffset = offset + n
+                val eof = nextOffset >= totalSize
                 val resp = socketManager.request(bridgeId) { id ->
                     Frame(
                         id = id,
-                        get_media = GetMediaRequest(media_id = mediaId, offset = offset, limit = 262_144),
+                        upload_media = UploadMediaRequest(
+                            upload_id = uploadId,
+                            session_id = sid,
+                            kind = protoKind,
+                            mime_type = mimeType,
+                            filename = filename,
+                            total_size = totalSize,
+                            offset = offset,
+                            data_ = buf.toByteString(0, n),
+                            eof = eof,
+                            sha256_plain = if (eof) shaBytes else okio.ByteString.EMPTY,
+                        ),
                     )
-                }.media ?: error("empty media response")
-                val bytes = resp.data_.toByteArray()
-                out.write(bytes)
-                if (expectedSha == null && resp.sha256_plain.size > 0) {
-                    expectedSha = resp.sha256_plain.toByteArray()
+                }.upload_media_resp ?: error("empty upload response")
+                if (eof) {
+                    require(resp.committed && resp.rel_path.isNotBlank()) { "media upload not committed" }
+                    committedPath = resp.rel_path
                 }
-                if (resp.eof || bytes.isEmpty()) break
-                offset = resp.next_offset
+                offset = nextOffset
             }
-            val fullBytes = out.toByteArray()
-            if (expectedSha != null && expectedSha.isNotEmpty()) {
-                val actualSha = MessageDigest.getInstance("SHA-256").digest(fullBytes)
-                require(actualSha.contentEquals(expectedSha)) { "media sha256 mismatch" }
-            }
-            val tmp = File(cacheDir, "$safeId.$ext.tmp")
-            tmp.writeBytes(fullBytes)
-            if (!tmp.renameTo(target)) {
-                target.writeBytes(fullBytes)
-                tmp.delete()
-            }
-            target
         }
+        committedPath ?: error("media upload incomplete")
+    }
+
+    private fun openAttachmentStream(uriString: String): InputStream {
+        if (uriString.startsWith("/")) {
+            return File(uriString).inputStream()
+        }
+        return context.contentResolver.openInputStream(Uri.parse(uriString))
+            ?: error("无法打开附件: $uriString")
+    }
+
+    private fun resolveMediaExtension(mimeType: String, filename: String): String {
+        val rawExt = filename.substringAfterLast('.', "").lowercase()
+        if (rawExt in SUPPORTED_MEDIA_EXTENSIONS) {
+            return rawExt
+        }
+        val m = mimeType.lowercase()
+        return when {
+            m.contains("png") -> "png"
+            m.contains("webp") -> "webp"
+            m.contains("gif") -> "gif"
+            m.contains("mp4") -> "mp4"
+            m.contains("quicktime") -> "mov"
+            m.contains("webm") -> "webm"
+            m.contains("matroska") -> "mkv"
+            m.contains("mpeg") -> "mp3"
+            m.contains("mp4a") || m.contains("aac") -> "m4a"
+            m.contains("wav") -> "wav"
+            m.contains("opus") -> "opus"
+            m.contains("ogg") -> "ogg"
+            m.contains("flac") -> "flac"
+            else -> "jpg"
+        }
+    }
+
+    companion object {
+        private const val MEDIA_CHUNK_BYTES = 262_144
+        private const val MAX_UPLOAD_MEDIA_BYTES = 16L * 1024 * 1024
+        private val SUPPORTED_MEDIA_EXTENSIONS = setOf(
+            "png", "jpg", "jpeg", "webp", "gif",
+            "mp4", "mov", "webm", "mkv",
+            "mp3", "m4a", "wav", "ogg", "opus", "aac", "flac",
+        )
+    }
 
     private fun Session.toEntity(bridgeId: String, updatedMs: Long) = SessionEntity(
         bridgeId = bridgeId,

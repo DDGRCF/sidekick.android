@@ -1,7 +1,9 @@
 package dev.ddgrcf.sidekick
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasStateDescription
 import androidx.compose.ui.test.hasText
@@ -30,6 +32,7 @@ import dev.ddgrcf.sidekick.ui.HomeContent
 import dev.ddgrcf.sidekick.ui.LoginContent
 import dev.ddgrcf.sidekick.ui.PairContent
 import dev.ddgrcf.sidekick.ui.SessionContent
+import dev.ddgrcf.sidekick.ui.SettingsContent
 import dev.ddgrcf.sidekick.ui.theme.SidekickTheme
 import dev.ddgrcf.sidekick.vm.MediaKind
 import dev.ddgrcf.sidekick.vm.PendingAttachment
@@ -298,8 +301,14 @@ class AppUiTest {
         composeRule.onNodeWithText("screenshot.webp").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("repro.mp4").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("voice.ogg").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("播放音频").assertIsDisplayed()
         composeRule.onNodeWithText("clip.mp4").assertIsDisplayed()
         composeRule.onNodeWithText("3.0 MiB · Blob").assertIsDisplayed()
+
+        // Tapping video card opens fullscreen VideoPlayerDialog
+        composeRule.onNodeWithContentDescription("视频预览").performClick()
+        composeRule.onNodeWithContentDescription("关闭视频").assertIsDisplayed().performClick()
+        composeRule.onNodeWithContentDescription("关闭视频").assertDoesNotExist()
     }
 
     @Test
@@ -348,6 +357,30 @@ class AppUiTest {
         composeRule.onNodeWithText("Terminal").assertIsDisplayed()
         composeRule.onNodeWithText("ANSI · 5 行").assertIsDisplayed()
         composeRule.onNodeWithText("draft kept").assertIsDisplayed()
+    }
+
+    @Test
+    fun demoPreviewFlowSupportsHandoverToAnotherAgentWithNote() {
+        composeRule.setContent {
+            SidekickTheme(darkTheme = true) {
+                DemoPreviewFlow(
+                    themeModeKey = "dark",
+                    onSetThemeMode = {},
+                    onExit = {},
+                )
+            }
+        }
+        composeRule.onNodeWithText("mac-studio").performClick()
+        composeRule.onNodeWithText("Refactor Noise chunking & E2E media").performClick()
+        composeRule.onNodeWithContentDescription("更多操作").performClick()
+        composeRule.onNodeWithText("移交给其他 Agent").assertIsDisplayed().performClick()
+        composeRule.onNodeWithText("移交给同机其他 Agent").assertIsDisplayed()
+        composeRule.onNodeWithText("移交内容与指令").performTextInput("继续完成剩余单测并回归")
+        composeRule.onNodeWithText("确认移交").performScrollTo().performClick()
+        composeRule.onNodeWithText("确认移交").assertDoesNotExist()
+        composeRule.onNodeWithText("claude").assertIsDisplayed()
+        composeRule.onNodeWithTag("chat_list").performScrollToNode(hasText("继续完成剩余单测并回归", substring = true))
+        composeRule.onNodeWithText("继续完成剩余单测并回归", substring = true).assertIsDisplayed()
     }
 
     @Test
@@ -552,5 +585,77 @@ class AppUiTest {
         composeRule.onNode(hasStateDescription("已收起会话标题")).assertIsDisplayed()
         composeRule.onNode(hasSetTextAction() and hasText("/")).assertIsDisplayed()
         assertTrue(focusChanges.lastOrNull() == false)
+    }
+
+    @Test
+    fun demoPreviewFlowEnablesChatForAntigravitySession() {
+        composeRule.setContent {
+            SidekickTheme(darkTheme = true) {
+                DemoPreviewFlow(
+                    themeModeKey = "dark",
+                    onSetThemeMode = {},
+                    onExit = {},
+                )
+            }
+        }
+        composeRule.onNodeWithText("mac-studio").performClick()
+        composeRule.onNodeWithText("Live TUI & Chat sync").performClick()
+        composeRule.onNodeWithText("Chat").assertIsDisplayed()
+        composeRule.onNodeWithText("Terminal").assertIsDisplayed()
+    }
+
+    @Test
+    fun homeAndSettingsMarkOfflineDeviceRowsDistinctlyAndDisableHomeRow() {
+        val bridges = listOf(
+            RelayDevice(id = "b-on", kind = "bridge", name = "mac-studio", pubkey = "AAAA", online = true),
+            RelayDevice(id = "b-off", kind = "bridge", name = "ubuntu-workstation", pubkey = "BBBB", online = false),
+        )
+        composeRule.setContent {
+            SidekickTheme(darkTheme = true) {
+                HomeContent(
+                    connectionState = ConnectionState.CONNECTED,
+                    bridges = bridges,
+                    refreshing = false,
+                    error = null,
+                    onRefresh = {},
+                    onOpenBridge = {},
+                    onOpenPair = {},
+                    onOpenSettings = {},
+                )
+            }
+        }
+        composeRule.onNodeWithText("mac-studio").assertIsDisplayed()
+        composeRule.onNodeWithText("ubuntu-workstation").assertIsNotEnabled()
+        composeRule.onNodeWithText("离线").assertIsDisplayed()
+    }
+
+    @Test
+    fun settingsContentShowsOfflineTagOnOfflineDevices() {
+        val devices = listOf(
+            RelayDevice(id = "p1", kind = "phone", name = "Pixel", pubkey = "AAAA", online = true),
+            RelayDevice(id = "b-off", kind = "bridge", name = "ubuntu-workstation", pubkey = "BBBB", online = false),
+        )
+        composeRule.setContent {
+            SidekickTheme(darkTheme = true) {
+                SettingsContent(
+                    themeModeKey = "dark",
+                    relayUrl = "http://127.0.0.1:8080",
+                    deviceId = "p1",
+                    devices = devices,
+                    otpauthUri = null,
+                    recoveryCodes = emptyList(),
+                    message = null,
+                    onBack = {},
+                    onSetThemeMode = {},
+                    onEnrollTotp = {},
+                    onConfirmTotp = {},
+                    onDismissRecoveryCodes = {},
+                    onRevokeDevice = {},
+                    onLogout = {},
+                )
+            }
+        }
+        composeRule.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("bridge · 离线"))
+        composeRule.onNodeWithText("bridge · 离线").assertIsDisplayed()
     }
 }
