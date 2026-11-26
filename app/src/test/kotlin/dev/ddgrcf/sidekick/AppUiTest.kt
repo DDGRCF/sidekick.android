@@ -380,7 +380,10 @@ class AppUiTest {
         composeRule.onNodeWithText("确认移交").assertDoesNotExist()
         composeRule.onNodeWithText("claude").assertIsDisplayed()
         composeRule.onNodeWithTag("chat_list").performScrollToNode(hasText("继续完成剩余单测并回归", substring = true))
+        composeRule.onNodeWithText("source_agent: codex", substring = true).assertIsDisplayed()
+        composeRule.onNodeWithText("source_session_id: codex-59bb8424", substring = true).assertIsDisplayed()
         composeRule.onNodeWithText("继续完成剩余单测并回归", substring = true).assertIsDisplayed()
+        composeRule.onNodeWithText("已选附带最近对话上下文", substring = true).assertDoesNotExist()
     }
 
     @Test

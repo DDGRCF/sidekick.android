@@ -661,6 +661,7 @@ fun SessionContent(
     if (showHandoverSheet) {
         HandoverBottomSheet(
             sourceTool = tool,
+            sourceSessionId = sessionId,
             availableTools = availableTools,
             otherSessions = otherSessions,
             busy = handoverBusy,
@@ -2119,6 +2120,7 @@ private fun VideoPlayerDialog(
 @Composable
 private fun HandoverBottomSheet(
     sourceTool: String,
+    sourceSessionId: String,
     availableTools: List<ToolInfo>,
     otherSessions: List<SessionEntity>,
     busy: Boolean,
@@ -2138,7 +2140,7 @@ private fun HandoverBottomSheet(
     }
     var selectedTargetSid by remember { mutableStateOf<String?>(null) }
     var note by rememberSaveable { mutableStateOf("") }
-    var includeContext by rememberSaveable { mutableStateOf(true) }
+    var includeContext by rememberSaveable { mutableStateOf(false) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -2157,8 +2159,12 @@ private fun HandoverBottomSheet(
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("移交给同机其他 Agent", style = MaterialTheme.typography.titleLarge)
+                val srcDesc = listOfNotNull(
+                    ToolVisuals.label(sourceTool),
+                    sourceSessionId.takeIf { it.isNotBlank() },
+                ).joinToString(" · ")
                 Text(
-                    text = "将当前 ${ToolVisuals.label(sourceTool)} 会话的进展与指令交接给同机器上的另一个 Agent",
+                    text = "来源：$srcDesc（默认自动向目标 Agent 传入来源 Agent、Session ID 与工作区）",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -2244,9 +2250,9 @@ private fun HandoverBottomSheet(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                    Text("自动附带最近对话 / 终端摘要", style = MaterialTheme.typography.bodyMedium)
+                    Text("附带最近对话 / 终端上下文（可选）", style = MaterialTheme.typography.bodyMedium)
                     Text(
-                        text = "由 Bridge 自动提取最近上下文随指令一并交接",
+                        text = "默认关闭；开启后会额外提取最近对话或终端输出一并发送",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

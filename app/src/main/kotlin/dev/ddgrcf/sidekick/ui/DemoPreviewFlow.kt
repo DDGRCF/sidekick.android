@@ -395,13 +395,17 @@ fun DemoPreviewFlow(
                         .firstOrNull { it.name.equals(targetTool, ignoreCase = true) }
                         ?.structured_history ?: true
                     val handoverText = buildString {
-                        append("[已从 ${ToolVisuals.label(cur.tool)} 移交至 ${ToolVisuals.label(targetTool)}]")
+                        appendLine("[Sidekick Handover]")
+                        appendLine("source_agent: ${ToolVisuals.label(cur.tool)}")
+                        appendLine("source_session_id: ${cur.sid}")
+                        appendLine("target_agent: ${ToolVisuals.label(targetTool)}")
+                        append("target_session_id: $nextSid")
                         if (note.isNotBlank()) {
-                            append("\n")
+                            append("\n\n")
                             append(note)
                         }
                         if (includeCtx) {
-                            append("\n(已附带最近对话上下文)")
+                            append("\n(已选附带最近对话上下文)")
                         }
                     }
                     val nextSeq = (messages.lastOrNull()?.seq ?: 0L) + 1L
