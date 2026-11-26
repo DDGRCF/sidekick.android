@@ -505,16 +505,20 @@ class AppUiTest {
             }
         }
 
-        // Initial peek shows full title strip cleanly.
+        // Initial peek shows full title strip cleanly without squeezing the chat canvas.
+        val expandedCanvasBounds = composeRule.onNodeWithTag("session_canvas").fetchSemanticsNode().boundsInRoot
         composeRule.onNode(hasStateDescription("已展开会话标题")).assertIsDisplayed()
         composeRule.onNodeWithText("Refactor Noise chunking").assertIsDisplayed()
         composeRule.onNodeWithText("已连接").assertIsDisplayed()
 
-        // Tapping the compact tool anchor collapses the title strip to reclaim vertical space.
+        // Tapping the compact tool anchor collapses the overlay without shifting the canvas bounds.
         composeRule.onNode(hasStateDescription("已展开会话标题")).performClick()
         composeRule.waitForIdle()
         composeRule.onNode(hasStateDescription("已收起会话标题")).assertIsDisplayed()
         composeRule.onNodeWithText("Refactor Noise chunking").assertDoesNotExist()
+        val collapsedCanvasBounds = composeRule.onNodeWithTag("session_canvas").fetchSemanticsNode().boundsInRoot
+        assertEquals(expandedCanvasBounds.top, collapsedCanvasBounds.top)
+        assertEquals(expandedCanvasBounds.bottom, collapsedCanvasBounds.bottom)
 
         // Tapping again re-summons and pins the full title strip.
         composeRule.onNode(hasStateDescription("已收起会话标题")).performClick()

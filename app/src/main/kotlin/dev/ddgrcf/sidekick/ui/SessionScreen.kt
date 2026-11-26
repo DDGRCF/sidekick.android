@@ -474,17 +474,13 @@ fun SessionContent(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             SessionAdaptiveHeader(
-                title = title,
                 tool = tool,
                 sessionId = sessionId,
                 structuredHistory = structuredHistory,
                 tabIdx = tabIdx,
-                connectionState = connectionState,
-                isDemo = isDemo,
                 expanded = showExpandedHeader,
                 showOverflow = showOverflow,
                 isTerminalTab = isTerminalTab,
-                terminalLineCount = screenLines.size,
                 terminalFontSizeSp = terminalFontSizeSp,
                 terminalSoftWrap = terminalSoftWrap,
                 canHandover = availableTools.isNotEmpty() || otherSessions.isNotEmpty(),
@@ -606,6 +602,18 @@ fun SessionContent(
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
+
+                SessionTitleDetailsOverlay(
+                    visible = showExpandedHeader,
+                    title = title,
+                    tool = tool,
+                    sessionId = sessionId,
+                    connectionState = connectionState,
+                    isDemo = isDemo,
+                    isTerminalTab = isTerminalTab,
+                    terminalLineCount = screenLines.size,
+                    modifier = Modifier.align(Alignment.TopCenter),
+                )
             }
         }
     }
@@ -667,17 +675,13 @@ fun SessionContent(
 
 @Composable
 private fun SessionAdaptiveHeader(
-    title: String,
     tool: String,
     sessionId: String,
     structuredHistory: Boolean,
     tabIdx: Int,
-    connectionState: ConnectionState,
-    isDemo: Boolean,
     expanded: Boolean,
     showOverflow: Boolean,
     isTerminalTab: Boolean,
-    terminalLineCount: Int,
     terminalFontSizeSp: Int,
     terminalSoftWrap: Boolean,
     canHandover: Boolean = false,
@@ -848,15 +852,40 @@ private fun SessionAdaptiveHeader(
                 )
             }
 
-            AnimatedVisibility(
-                visible = expanded,
-                enter = expandVertically(tween(200)) + fadeIn(tween(160)),
-                exit = shrinkVertically(tween(180)) + fadeOut(tween(140)),
-            ) {
+            HairlineDivider()
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SessionTitleDetailsOverlay(
+    visible: Boolean,
+    title: String,
+    tool: String,
+    sessionId: String,
+    connectionState: ConnectionState,
+    isDemo: Boolean,
+    isTerminalTab: Boolean,
+    terminalLineCount: Int,
+    modifier: Modifier = Modifier,
+) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = expandVertically(tween(200)) + fadeIn(tween(160)),
+        exit = shrinkVertically(tween(180)) + fadeOut(tween(140)),
+        modifier = modifier,
+    ) {
+        Surface(
+            color = MaterialTheme.colorScheme.background,
+            shadowElevation = 2.dp,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
+                        .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     Text(
@@ -895,9 +924,8 @@ private fun SessionAdaptiveHeader(
                         }
                     }
                 }
+                HairlineDivider()
             }
-
-            HairlineDivider()
         }
     }
 }
