@@ -3,13 +3,16 @@ package dev.ddgrcf.sidekick
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasStateDescription
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -21,6 +24,7 @@ import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
+import dev.ddgrcf.sidekick.core.store.HistoryEntity
 import dev.ddgrcf.sidekick.core.ansi.AnsiParser
 import dev.ddgrcf.sidekick.core.relay.ConnectionState
 import dev.ddgrcf.sidekick.core.relay.RelayDevice
@@ -34,7 +38,9 @@ import dev.ddgrcf.sidekick.ui.HomeContent
 import dev.ddgrcf.sidekick.ui.LoginContent
 import dev.ddgrcf.sidekick.ui.PairContent
 import dev.ddgrcf.sidekick.ui.SessionContent
+import dev.ddgrcf.sidekick.ui.SessionSettingsBottomSheet
 import dev.ddgrcf.sidekick.ui.SettingsContent
+import dev.ddgrcf.sidekick.ui.WorkspaceDiffSheet
 import dev.ddgrcf.sidekick.ui.theme.SidekickTheme
 import dev.ddgrcf.sidekick.vm.MediaKind
 import dev.ddgrcf.sidekick.vm.ModelOptionUi
@@ -1426,5 +1432,274 @@ class AppUiTest {
         composeRule.onNodeWithText("""cd "/repo/sidekick.nvim" && codex resume "thr-123"""").assertIsDisplayed()
         composeRule.onNodeWithText("复制命令").performClick()
         assertTrue(dismissed)
+    }
+
+    @Test
+    fun sessionComposerClearsFocusAfterSendingMessage() {
+        var sentPayload = ""
+        val focusChanges = mutableListOf<Boolean>()
+        composeRule.setContent {
+            SidekickTheme(darkTheme = false) {
+                SessionContent(
+                    title = "codex rpc",
+                    tool = "codex",
+                    sessionId = "codex 1234 abcd",
+                    structuredHistory = true,
+                    isRpcSession = true,
+                    live = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = emptyList(),
+                    decodeParts = { emptyList() },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { txt, submit ->
+                        if (submit) sentPayload = txt
+                    },
+                    onSendKey = {},
+                    onFocusChanged = { focusChanges += it },
+                )
+            }
+        }
+        composeRule.onNode(hasSetTextAction()).performClick()
+        composeRule.onNode(hasSetTextAction()).performTextInput("hello agent")
+        composeRule.waitForIdle()
+        assertTrue(focusChanges.lastOrNull() == true)
+
+        composeRule.onNodeWithContentDescription("发送").performClick()
+        composeRule.waitForIdle()
+        assertEquals("hello agent", sentPayload)
+        assertTrue(focusChanges.lastOrNull() == false)
+    }
+
+    @Test
+    fun sessionComposerDisablesEmptySendInRpcChatAndPersistsDraftPerSession() {
+        var sentCount = 0
+        val enterKeys = mutableListOf<Key>()
+        val activeSid = androidx.compose.runtime.mutableStateOf("codex s1")
+        composeRule.setContent {
+            SidekickTheme(darkTheme = false) {
+                SessionContent(
+                    title = "codex rpc",
+                    tool = "codex",
+                    sessionId = activeSid.value,
+                    structuredHistory = true,
+                    isRpcSession = true,
+                    live = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = emptyList(),
+                    decodeParts = { emptyList() },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { _, _ -> sentCount++ },
+                    onSendKey = { enterKeys += it },
+                    onFocusChanged = {},
+                )
+            }
+        }
+
+        // In RPC Chat mode, empty send must not dispatch KEY_ENTER or message.
+        composeRule.onNodeWithContentDescription("发送").performClick()
+        composeRule.waitForIdle()
+        assertEquals(0, sentCount)
+        assertTrue(enterKeys.isEmpty())
+
+        // Type draft in session s1, switch to s2 (clean), then switch back to s1 (restored).
+        composeRule.onNode(hasSetTextAction()).performTextInput("draft in s1")
+        composeRule.waitForIdle()
+        composeRule.runOnIdle { activeSid.value = "codex s2" }
+        composeRule.waitForIdle()
+        composeRule.onNode(hasSetTextAction() and hasText("")).assertIsDisplayed()
+
+        composeRule.runOnIdle { activeSid.value = "codex s1" }
+        composeRule.waitForIdle()
+        composeRule.onNode(hasSetTextAction() and hasText("draft in s1")).assertIsDisplayed()
+    }
+
+    @Test
+    fun sessionSettingsSheetPinsCurrentModelFirstAndRanksSearchMatches() {
+        val cfg = SessionConfigUi(
+            sessionId = "codex 1",
+            model = "claude-opus-4",
+            thinkingLevel = "high",
+            runtimeMode = RuntimeModeUi.AUTO_ACCEPT_EDITS,
+            availableModels = listOf(
+                ModelOptionUi(id = "gpt-5", provider = "openai", name = "GPT-5", reasoning = true),
+                ModelOptionUi(id = "claude-sonnet-4", provider = "anthropic", name = "Claude Sonnet 4", reasoning = true),
+                ModelOptionUi(id = "claude-opus-4", provider = "anthropic", name = "Claude Opus 4", reasoning = true, current = true),
+            ),
+            availableThinkingLevels = listOf("low", "medium", "high"),
+            supportedRuntimeModes = listOf(RuntimeModeUi.AUTO_ACCEPT_EDITS, RuntimeModeUi.FULL_ACCESS),
+        )
+        composeRule.setContent {
+            SidekickTheme(darkTheme = false) {
+                SessionSettingsBottomSheet(
+                    config = cfg,
+                    onSelectModel = {},
+                    onSelectThinking = {},
+                    onSelectRuntimeMode = {},
+                    onDismiss = {},
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        composeRule.onAllNodesWithTag("settings_sheet_model_item")[0].assertTextContains("Claude Opus 4")
+
+        composeRule.onNodeWithTag("settings_sheet_model_search").performTextInput("gpt")
+        composeRule.waitForIdle()
+        composeRule.onAllNodesWithTag("settings_sheet_model_item").assertCountEquals(1)
+        composeRule.onAllNodesWithTag("settings_sheet_model_item")[0].assertTextContains("GPT-5")
+
+        composeRule.onNodeWithContentDescription("清空搜索").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("模型选择 (3)").assertIsDisplayed()
+        composeRule.onAllNodesWithTag("settings_sheet_model_item")[0].assertTextContains("Claude Opus 4")
+    }
+
+    @Test
+    fun sessionComposerShowsEnterActionForNonRpcChatAndInteractiveDialogConfirmsEnter() {
+        val sentKeys = mutableListOf<Key>()
+        composeRule.setContent {
+            SidekickTheme(darkTheme = false) {
+                SessionContent(
+                    title = "codex tui",
+                    tool = "codex",
+                    sessionId = "codex 1",
+                    structuredHistory = true,
+                    isRpcSession = false,
+                    live = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = emptyList(),
+                    interactiveDialog = InteractiveDialogState(
+                        open = true,
+                        kind = "confirm",
+                        title = "Trust directory?",
+                        options = listOf(InteractiveDialogOptionUi(label = "Yes, proceed")),
+                    ),
+                    decodeParts = { emptyList() },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { _, _ -> },
+                    onSendKey = { sentKeys += it },
+                    onFocusChanged = {},
+                )
+            }
+        }
+        composeRule.onNodeWithContentDescription("发送回车").assertIsDisplayed().performClick()
+        composeRule.onNodeWithText("回车确认").assertIsDisplayed().performClick()
+        assertEquals(listOf(Key.KEY_ENTER, Key.KEY_ENTER), sentKeys)
+    }
+
+    @Test
+    fun bridgeScreenSupportsLongPressAndDeleteForSessionsAndHistory() {
+        val deletedSessions = mutableListOf<String>()
+        val deletedHistory = mutableListOf<String>()
+        var restoredCount = 0
+        composeRule.setContent {
+            SidekickTheme(darkTheme = false) {
+                BridgeContent(
+                    bridgeName = "workstation",
+                    sessions = listOf(
+                        SessionEntity("b1", "live-1", "codex", "/repo/a", "Live task", null, true, 100L, 100L),
+                    ),
+                    history = listOf(
+                        HistoryEntity("b1", "conv-1", "codex", "/repo/a", "Old task", "preview", 100L, null),
+                    ),
+                    tools = emptyList(),
+                    workspaces = emptyList(),
+                    error = null,
+                    hiddenHistoryCount = 1,
+                    onBack = {},
+                    onRefresh = {},
+                    onClickSession = {},
+                    onClickHistory = {},
+                    onStartNew = { _, _ -> },
+                    onDeleteSession = { deletedSessions += it.sid },
+                    onDeleteHistory = { deletedHistory += it.convId },
+                    onRestoreHiddenHistory = { restoredCount++ },
+                )
+            }
+        }
+        // Long-press live session -> bottom sheet -> stop & remove -> confirmation dialog
+        composeRule.onNodeWithText("Live task").performTouchInput { longClick() }
+        composeRule.onNodeWithText("停止并移除会话").assertIsDisplayed().performClick()
+        composeRule.onNodeWithText("停止并移除会话？").assertIsDisplayed()
+        composeRule.onNodeWithText("停止并移除").performClick()
+        assertEquals(listOf("live-1"), deletedSessions)
+
+        // Switch to history tab -> verify restore banner + long-press remove
+        composeRule.onNodeWithText("全部历史 (1)").performClick()
+        composeRule.onNodeWithText("已隐藏 1 条历史").assertIsDisplayed()
+        composeRule.onNodeWithText("恢复全部").performClick()
+        assertEquals(1, restoredCount)
+
+        composeRule.onNodeWithText("Old task").performTouchInput { longClick() }
+        composeRule.onNodeWithText("从列表移除（保留电脑原文件）").assertIsDisplayed().performClick()
+        assertEquals(listOf("conv-1"), deletedHistory)
+    }
+
+    @Test
+    fun workspaceDiffSheetExpandsPerFileDiffAndOpensFullscreenPreview() {
+        val rawDiff = """
+            diff --git a/lua/one.lua b/lua/one.lua
+            --- a/lua/one.lua
+            +++ b/lua/one.lua
+            @@ -1,2 +1,2 @@
+             local a = 1
+            -return 1
+            +return 2
+            diff --git a/new_untracked.lua b/new_untracked.lua
+            new file mode 100644
+            --- /dev/null
+            +++ b/new_untracked.lua
+            @@ -0,0 +1,1 @@
+            +print("hello")
+        """.trimIndent()
+        val wc = WorkspaceContextUi(
+            cwd = "/repo/sidekick.nvim",
+            gitBranch = "feat-diff",
+            changedFiles = listOf(
+                ChangedFileUi("lua/one.lua", "M", added = 1, removed = 1),
+                ChangedFileUi("new_untracked.lua", "??", added = 1, removed = 0),
+            ),
+            gitDiff = rawDiff,
+        )
+        composeRule.setContent {
+            SidekickTheme(darkTheme = false) {
+                WorkspaceDiffSheet(
+                    workspaceContext = wc,
+                    loading = false,
+                    onRefresh = {},
+                    onAttachSummary = {},
+                    onDismiss = {},
+                )
+            }
+        }
+        composeRule.onNodeWithTag("workspace_diff_sheet").assertIsDisplayed()
+        // Multi-file list starts collapsed; tap second file row to inspect untracked diff
+        composeRule.onNodeWithText("+print(\"hello\")").assertDoesNotExist()
+        composeRule.onNodeWithTag("diff_file_row_new_untracked.lua").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("workspace_diff_sheet").performScrollToNode(hasText("+print(\"hello\")"))
+        composeRule.onNodeWithText("+print(\"hello\")").assertIsDisplayed()
+
+        // Open fullscreen preview dialog and close it
+        composeRule.onNodeWithContentDescription("全屏查看 Diff").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("fullscreen_diff_dialog").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("关闭全屏 Diff").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("fullscreen_diff_dialog").assertDoesNotExist()
     }
 }

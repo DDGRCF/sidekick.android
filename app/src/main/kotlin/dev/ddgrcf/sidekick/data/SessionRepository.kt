@@ -52,9 +52,11 @@ import dev.ddgrcf.sidekick.proto.v1.Workspace
 import dev.ddgrcf.sidekick.proto.v1.WorkspaceContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -107,6 +109,17 @@ class SessionRepository @Inject constructor(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private val rpcSessionKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val uiPrefs by lazy { context.getSharedPreferences("sidekick_ui_prefs", Context.MODE_PRIVATE) }
+    private val hiddenHistoryKeys by lazy {
+        MutableStateFlow(uiPrefs.getStringSet("hidden_history_keys", emptySet())?.toSet() ?: emptySet())
+    }
+
+    private fun historyHideKey(bridgeId: String, convId: String): String = "$bridgeId::$convId"
+
+    private fun saveHiddenHistoryKeys(next: Set<String>) {
+        hiddenHistoryKeys.value = next
+        uiPrefs.edit().putStringSet("hidden_history_keys", next).apply()
+    }
 
     fun isRpcSession(bridgeId: String, sid: String): Boolean = rpcSessionKeys.contains("$bridgeId:$sid")
 
@@ -165,10 +178,12 @@ class SessionRepository @Inject constructor(
             Frame(id = id, list_history = ListHistoryRequest(tool = tool, cwd = cwd, limit = 100))
         }
         val entries = resp.history?.entries ?: emptyList()
+        val hidden = hiddenHistoryKeys.value
         db.historyDao().deleteByBridge(bridgeId)
         db.historyDao().upsertAll(
             entries.mapNotNull { e ->
                 val cid = e.conversation?.id ?: return@mapNotNull null
+                if (historyHideKey(bridgeId, cid) in hidden) return@mapNotNull null
                 HistoryEntity(
                     bridgeId = bridgeId,
                     convId = cid,
@@ -424,6 +439,40 @@ class SessionRepository @Inject constructor(
             Frame(id = id, stop_session = StopSessionRequest(session_id = sid))
         }
         markSessionClosed(bridgeId, sid)
+    }
+
+    suspend fun removeSession(bridgeId: String, sid: String, live: Boolean) {
+        if (live) {
+            runCatching {
+                socketManager.request(bridgeId) { id ->
+                    Frame(id = id, stop_session = StopSessionRequest(session_id = sid))
+                }
+            }.onFailure { err ->
+                if (!err.message.orEmpty().contains("not found", ignoreCase = true)) {
+                    throw err
+                }
+            }
+        }
+        rpcSessionKeys.remove("$bridgeId:$sid")
+        db.sessionDao().deleteBySid(bridgeId, sid)
+    }
+
+    suspend fun hideHistory(bridgeId: String, convId: String) {
+        if (convId.isBlank()) return
+        saveHiddenHistoryKeys(hiddenHistoryKeys.value + historyHideKey(bridgeId, convId))
+        db.historyDao().deleteByConvId(bridgeId, convId)
+    }
+
+    fun observeHiddenHistoryCount(bridgeId: String): Flow<Int> =
+        hiddenHistoryKeys.map { set ->
+            val prefix = "$bridgeId::"
+            set.count { it.startsWith(prefix) }
+        }
+
+    suspend fun restoreHiddenHistory(bridgeId: String) {
+        val prefix = "$bridgeId::"
+        saveHiddenHistoryKeys(hiddenHistoryKeys.value.filterNot { it.startsWith(prefix) }.toSet())
+        refreshHistory(bridgeId)
     }
 
     suspend fun listFiles(bridgeId: String, sid: String, query: String, limit: Int = 50): List<FileEntry> {

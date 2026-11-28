@@ -18,6 +18,9 @@ interface SessionDao {
 
     @Query("UPDATE sessions SET live = 0 WHERE bridgeId = :bridgeId AND sid = :sid")
     suspend fun markClosed(bridgeId: String, sid: String)
+
+    @Query("DELETE FROM sessions WHERE bridgeId = :bridgeId AND sid = :sid")
+    suspend fun deleteBySid(bridgeId: String, sid: String)
 }
 
 @Dao
@@ -45,4 +48,7 @@ interface HistoryDao {
 
     @Query("DELETE FROM history WHERE bridgeId = :bridgeId")
     suspend fun deleteByBridge(bridgeId: String)
+
+    @Query("DELETE FROM history WHERE bridgeId = :bridgeId AND convId = :convId")
+    suspend fun deleteByConvId(bridgeId: String, convId: String)
 }

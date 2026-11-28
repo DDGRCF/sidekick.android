@@ -572,6 +572,9 @@ class BridgeViewModel @Inject constructor(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    private val _hiddenHistoryCount = MutableStateFlow(0)
+    val hiddenHistoryCount: StateFlow<Int> = _hiddenHistoryCount.asStateFlow()
+
     private var observeJob: Job? = null
     private var refreshJob: Job? = null
 
@@ -582,6 +585,7 @@ class BridgeViewModel @Inject constructor(
         observeJob = viewModelScope.launch {
             launch { repo.observeSessions(bridgeId).collect { _sessions.value = it } }
             launch { repo.observeHistory(bridgeId).collect { _history.value = it } }
+            launch { repo.observeHiddenHistoryCount(bridgeId).collect { _hiddenHistoryCount.value = it } }
             launch {
                 repo.events.collect { ev ->
                     if (ev.bridgeId != bridgeId) return@collect
@@ -660,6 +664,33 @@ class BridgeViewModel @Inject constructor(
                 _error.value = e.message ?: "启动会话失败"
             }
             _startingSession.value = false
+        }
+    }
+
+    fun deleteSession(session: SessionEntity) {
+        val bid = _bridgeId.value
+        if (bid.isBlank()) return
+        viewModelScope.launch {
+            runCatching { repo.removeSession(bid, session.sid, session.live) }
+                .onFailure { e -> _error.value = e.message ?: "停止或移除会话失败" }
+        }
+    }
+
+    fun deleteHistory(entry: HistoryEntity) {
+        val bid = _bridgeId.value
+        if (bid.isBlank()) return
+        viewModelScope.launch {
+            runCatching { repo.hideHistory(bid, entry.convId) }
+                .onFailure { e -> _error.value = e.message ?: "移除历史失败" }
+        }
+    }
+
+    fun restoreHiddenHistory() {
+        val bid = _bridgeId.value
+        if (bid.isBlank()) return
+        viewModelScope.launch {
+            runCatching { repo.restoreHiddenHistory(bid) }
+                .onFailure { e -> _error.value = e.message ?: "恢复历史失败" }
         }
     }
 }

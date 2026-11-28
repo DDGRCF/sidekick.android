@@ -9,6 +9,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import android.widget.MediaController
 import android.widget.VideoView
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -76,6 +77,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.KeyboardReturn
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.automirrored.rounded.WrapText
 import androidx.compose.material.icons.rounded.Add
@@ -150,8 +152,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
@@ -162,6 +166,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -174,7 +179,9 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -201,6 +208,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -242,6 +250,22 @@ import java.io.File
 import java.util.Base64
 import java.util.Locale
 import java.util.UUID
+
+private object SessionDraftCache {
+    private const val MAX_ENTRIES = 40
+    private val map = object : LinkedHashMap<String, String>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > MAX_ENTRIES
+    }
+
+    @Synchronized
+    fun get(key: String): String = if (key.isBlank()) "" else map[key].orEmpty()
+
+    @Synchronized
+    fun put(key: String, text: String) {
+        if (key.isBlank()) return
+        if (text.isEmpty()) map.remove(key) else map[key] = text
+    }
+}
 
 @Composable
 fun SessionScreen(
@@ -491,9 +515,36 @@ fun SessionContent(
     }
 
     val isTerminalTab = (!structuredHistory || tabIdx == 1) && !isRpcSession
+    val isRunning = streamingDraft.active || (sessionConfig?.isRunning == true)
     val imeVisible = WindowInsets.isImeVisible
     val connectionAttention = connectionState != ConnectionState.CONNECTED
     val showExpandedHeader = headerExpanded || headerPinned || connectionAttention
+
+    val view = LocalView.current
+    val haptic = LocalHapticFeedback.current
+    DisposableEffect(view, isRunning) {
+        val prev = view.keepScreenOn
+        if (isRunning) {
+            view.keepScreenOn = true
+        }
+        onDispose {
+            view.keepScreenOn = prev
+        }
+    }
+
+    var wasRunningForHaptic by remember(sessionId) { mutableStateOf(false) }
+    LaunchedEffect(isRunning) {
+        if (wasRunningForHaptic && !isRunning) {
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        }
+        wasRunningForHaptic = isRunning
+    }
+    val topPendingReqId = pendingRuntimeRequests.firstOrNull()?.requestId
+    LaunchedEffect(topPendingReqId) {
+        if (!topPendingReqId.isNullOrBlank()) {
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        }
+    }
 
     LaunchedEffect(peekTrigger, headerExpanded, headerPinned, connectionAttention) {
         if (headerExpanded && !headerPinned && !connectionAttention) {
@@ -520,6 +571,12 @@ fun SessionContent(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    var dismissSignal by rememberSaveable { mutableIntStateOf(0) }
+    var composerFocused by remember { mutableStateOf(false) }
+    var hasComposerPopup by remember { mutableStateOf(false) }
+
     val density = LocalDensity.current
     val showThresholdPx = with(density) { 18.dp.toPx() }
     val hideThresholdPx = with(density) { 14.dp.toPx() }
@@ -530,6 +587,11 @@ fun SessionContent(
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                 if (source == NestedScrollSource.UserInput) {
                     val dy = available.y
+                    if (abs(dy) > 4f && (imeVisible || composerFocused)) {
+                        focusManager.clearFocus(force = true)
+                        keyboardController?.hide()
+                        dismissSignal++
+                    }
                     if (dy > 0f) {
                         upAccum += dy
                         downAccum = 0f
@@ -560,9 +622,17 @@ fun SessionContent(
         }
     }
 
-    val focusManager = LocalFocusManager.current
-    val keyboardController = LocalSoftwareKeyboardController.current
-    var dismissSignal by rememberSaveable { mutableIntStateOf(0) }
+    BackHandler(
+        enabled = hasComposerPopup ||
+            (!isTerminalTab && !isRpcSession && interactiveDialog?.open == true) ||
+            (isTerminalTab && structuredHistory),
+    ) {
+        when {
+            hasComposerPopup -> dismissSignal++
+            !isTerminalTab && !isRpcSession && interactiveDialog?.open == true -> onDismissDialog()
+            isTerminalTab && structuredHistory -> selectTab(0)
+        }
+    }
 
     fun dismissConversationChrome() {
         focusManager.clearFocus(force = true)
@@ -641,10 +711,12 @@ fun SessionContent(
         bottomBar = {
             SessionComposer(
                 tool = tool,
+                draftKey = if (!isDemo && sessionId.isNotBlank()) "$tool::$sessionId" else "",
                 localTyping = localTyping,
                 defaultShowKeycaps = isTerminalTab,
+                allowEmptyEnter = !isRpcSession,
                 showKeycapToggle = !isRpcSession,
-                isRunning = streamingDraft.active || (sessionConfig?.isRunning == true),
+                isRunning = isRunning,
                 sessionConfig = sessionConfig,
                 pendingRuntimeRequests = pendingRuntimeRequests,
                 workspaceContext = workspaceContext,
@@ -656,6 +728,7 @@ fun SessionContent(
                 fileSuggestions = fileSuggestions,
                 slashCommands = slashCommands,
                 screenLines = screenLines,
+                onPopupVisibleChanged = { hasComposerPopup = it },
                 onOpenDiffSheet = {
                     showDiffSheet = true
                     onRefreshWorkspaceContext(true)
@@ -674,7 +747,10 @@ fun SessionContent(
                 onOpenSettingsSheet = { showSettingsSheet = true },
                 onRespondApproval = onRespondApproval,
                 onRespondUserInput = onRespondUserInput,
-                onFocusChanged = onFocusChanged,
+                onFocusChanged = { focused ->
+                    composerFocused = focused
+                    onFocusChanged(focused)
+                },
             )
         },
     ) { padding ->
@@ -725,6 +801,7 @@ fun SessionContent(
                         decodeParts = decodeParts,
                         fetchedMediaPaths = fetchedMediaPaths,
                         onCopyText = { txt, label ->
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             clipboard.setText(AnnotatedString(txt))
                             notify("已复制$label")
                         },
@@ -783,6 +860,7 @@ fun SessionContent(
                         dialog = activeDialog,
                         onSelectOption = onSelectDialogOption,
                         onSearchChanged = onDialogSearch,
+                        onConfirmEnter = { onSendKey(Key.KEY_ENTER) },
                         onDismiss = onDismissDialog,
                         onSwitchToTerminal = { selectTab(1) },
                         modifier = Modifier
@@ -1307,6 +1385,7 @@ private fun SessionViewTabs(
 @Composable
 private fun ScrollToBottomButton(
     onClick: () -> Unit,
+    hasLiveActivity: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val extras = SidekickThemeExtras.colors
@@ -1318,10 +1397,10 @@ private fun ScrollToBottomButton(
         Surface(
             onClick = onClick,
             shape = CircleShape,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            contentColor = MaterialTheme.colorScheme.onSurface,
+            color = if (hasLiveActivity) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+            contentColor = if (hasLiveActivity) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
             shadowElevation = 1.dp,
-            border = BorderStroke(0.5.dp, extras.hairline),
+            border = BorderStroke(0.5.dp, if (hasLiveActivity) MaterialTheme.colorScheme.primary else extras.hairline),
             modifier = Modifier.size(40.dp),
         ) {
             Box(contentAlignment = Alignment.Center) {
@@ -1423,20 +1502,39 @@ private fun ChatView(
     val showJumpToBottom by remember {
         derivedStateOf { listState.canScrollForward }
     }
+    var followBottom by remember { mutableStateOf(true) }
     val mergeStreamingIntoLastTurn = streamingDraft.active &&
         optimisticUserMessages.isEmpty() &&
         turns.lastOrNull() is ChatTurn.Assistant
     val showStandaloneStreaming = streamingDraft.active && !mergeStreamingIntoLastTurn
     val totalItems = turns.size + optimisticUserMessages.size + if (showStandaloneStreaming) 1 else 0
-    val hasTailActivity = optimisticUserMessages.isNotEmpty() || streamingDraft.active
+
+    fun isAtBottomPx(): Boolean {
+        val info = listState.layoutInfo
+        if (info.totalItemsCount <= 0) return true
+        val last = info.visibleItemsInfo.lastOrNull() ?: return true
+        return last.index >= info.totalItemsCount - 1 &&
+            (last.offset + last.size) - info.viewportEndOffset <= 48
+    }
+
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress to isAtBottomPx() }
+            .collect { (scrolling, atBottom) ->
+                if (scrolling && !atBottom) {
+                    followBottom = false
+                } else if (!scrolling && atBottom) {
+                    followBottom = true
+                }
+            }
+    }
 
     LaunchedEffect(totalItems, streamingDraft.text.length / 40, streamingDraft.thinking.length / 80) {
         if (totalItems > 0) {
-            val info = listState.layoutInfo
-            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: 0
-            val nearBottom = info.totalItemsCount <= 1 || lastVisible >= info.totalItemsCount - 2
             val lastIsUser = optimisticUserMessages.isNotEmpty() || (turns.lastOrNull() is ChatTurn.User)
-            if (lastIsUser || (nearBottom && (hasTailActivity || turns.isNotEmpty()))) {
+            if (lastIsUser) {
+                followBottom = true
+                scrollToListEnd(listState, totalItems - 1)
+            } else if (followBottom && !listState.isScrollInProgress) {
                 scrollToListEnd(listState, totalItems - 1)
             }
         }
@@ -1514,7 +1612,11 @@ private fun ChatView(
 
         if (showJumpToBottom && totalItems > 0) {
             ScrollToBottomButton(
-                onClick = { scope.launch { scrollToListEnd(listState, totalItems - 1) } },
+                hasLiveActivity = streamingDraft.active,
+                onClick = {
+                    followBottom = true
+                    scope.launch { scrollToListEnd(listState, totalItems - 1) }
+                },
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(12.dp),
@@ -2135,28 +2237,23 @@ private fun WorkLogActivityRow(
                         }
                     }
                     if (activity.detailDiff.isNotBlank()) {
-                        val errorColor = MaterialTheme.colorScheme.error
-                        val diffAnnotated = remember(activity.detailDiff, extras.success, errorColor, extras.codeText) {
-                            buildAnnotatedString {
-                                activity.detailDiff.lines().forEachIndexed { idx, ln ->
-                                    if (idx > 0) append('\n')
-                                    val color = when {
-                                        ln.startsWith("+") && !ln.startsWith("+++") -> extras.success
-                                        ln.startsWith("-") && !ln.startsWith("---") -> errorColor
-                                        else -> extras.codeText.copy(alpha = 0.78f)
-                                    }
-                                    withStyle(SpanStyle(color = color)) {
-                                        append(ln)
-                                    }
-                                }
-                            }
+                        val parsedPatch = remember(activity.detailDiff) {
+                            parseSinglePatchSnippet(activity.detailDiff)
                         }
-                        SelectionContainer {
-                            Text(
-                                text = diffAnnotated,
-                                fontFamily = FontFamily.Monospace,
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, lineHeight = 17.sp),
-                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        var showFullscreenToolDiff by remember { mutableStateOf(false) }
+                        DiffCodeBlock(
+                            lines = parsedPatch,
+                            maxLines = 80,
+                            onCopyDiff = { onCopyText(activity.detailDiff, "Diff") },
+                            onOpenFullscreen = { showFullscreenToolDiff = true },
+                        )
+                        if (showFullscreenToolDiff) {
+                            FullscreenDiffDialog(
+                                title = activity.target.ifBlank { activity.verb },
+                                subtitle = formatDiffStats(activity.addedLines, activity.removedLines),
+                                lines = parsedPatch,
+                                onCopyDiff = { onCopyText(activity.detailDiff, "Diff") },
+                                onDismiss = { showFullscreenToolDiff = false },
                             )
                         }
                     }
@@ -2253,6 +2350,7 @@ private fun InteractiveDialogOverlay(
     dialog: InteractiveDialogState,
     onSelectOption: (Int) -> Unit,
     onSearchChanged: (String) -> Unit,
+    onConfirmEnter: () -> Unit = {},
     onDismiss: () -> Unit,
     onSwitchToTerminal: () -> Unit,
     modifier: Modifier = Modifier,
@@ -2472,6 +2570,12 @@ private fun InteractiveDialogOverlay(
                     modifier = Modifier.defaultMinSize(minHeight = 48.dp),
                 ) {
                     Text("取消 (Esc)")
+                }
+                OutlinedButton(
+                    onClick = onConfirmEnter,
+                    modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                ) {
+                    Text("回车确认")
                 }
                 Spacer(Modifier.weight(1f))
                 TextButton(
@@ -4582,8 +4686,10 @@ private fun buildTerminalChunks(lines: List<AnsiLine>, defaultFg: Color): List<A
 @Composable
 private fun SessionComposer(
     tool: String,
+    draftKey: String = "",
     localTyping: Boolean,
     defaultShowKeycaps: Boolean,
+    allowEmptyEnter: Boolean = defaultShowKeycaps,
     showKeycapToggle: Boolean = true,
     isRunning: Boolean = false,
     sessionConfig: SessionConfigUi? = null,
@@ -4597,6 +4703,7 @@ private fun SessionComposer(
     fileSuggestions: List<WorkspaceFileSuggestion>,
     slashCommands: List<SlashCommandSuggestion>,
     screenLines: List<AnsiLine>,
+    onPopupVisibleChanged: (Boolean) -> Unit = {},
     onOpenDiffSheet: () -> Unit = {},
     onOpenNvimSheet: () -> Unit = {},
     onSearchFiles: (String) -> Unit,
@@ -4611,7 +4718,10 @@ private fun SessionComposer(
     onRespondUserInput: (requestId: String, answers: List<RuntimeAnswerInput>, cancelled: Boolean) -> Unit = { _, _, _ -> },
     onFocusChanged: (Boolean) -> Unit,
 ) {
-    var fieldState by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
+    var fieldState by rememberSaveable(draftKey, stateSaver = TextFieldValue.Saver) {
+        val initial = SessionDraftCache.get(draftKey)
+        mutableStateOf(TextFieldValue(text = initial, selection = TextRange(initial.length)))
+    }
     var autocompleteDismissed by rememberSaveable { mutableStateOf(false) }
     val text = fieldState.text
     val slashQuery = remember(text) { extractLeadingSlashQuery(text) }
@@ -4622,6 +4732,7 @@ private fun SessionComposer(
 
     fun updateText(newText: String) {
         autocompleteDismissed = false
+        SessionDraftCache.put(draftKey, newText)
         fieldState = TextFieldValue(text = newText, selection = TextRange(newText.length))
     }
 
@@ -4634,6 +4745,14 @@ private fun SessionComposer(
     @Suppress("DEPRECATION")
     val clipboard = LocalClipboardManager.current
     val extras = SidekickThemeExtras.colors
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val haptic = LocalHapticFeedback.current
+
+    fun hideKeyboard() {
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
+    }
 
     LaunchedEffect(pendingInsertSnippet?.first) {
         val snippet = pendingInsertSnippet?.second
@@ -4708,18 +4827,25 @@ private fun SessionComposer(
         val pendingApproval = pendingRuntimeRequests.firstOrNull { it.kind == RuntimeRequestKindUi.APPROVAL }
         when {
             payload.isNotEmpty() && pendingApproval != null -> {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                 onRespondApproval(pendingApproval.requestId, "decline", payload)
                 updateText("")
                 livePtySlashMode = false
                 onClearQuote()
+                hideKeyboard()
             }
             payload.isNotEmpty() || pendingAttachments.isNotEmpty() -> {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                 onSendInput(payload, true)
                 updateText("")
                 livePtySlashMode = false
                 onClearQuote()
+                hideKeyboard()
             }
-            else -> onSendKey(Key.KEY_ENTER)
+            allowEmptyEnter -> {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                onSendKey(Key.KEY_ENTER)
+            }
         }
     }
 
@@ -4767,16 +4893,29 @@ private fun SessionComposer(
         if (topApproval != null) {
             DockedApprovalCard(
                 request = topApproval,
-                onDecision = { dec -> onRespondApproval(topApproval.requestId, dec, "") },
+                onDecision = { dec ->
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onRespondApproval(topApproval.requestId, dec, "")
+                },
             )
         } else if (topUserInput != null) {
             DockedUserInputCard(
                 request = topUserInput,
-                onSubmit = { answers, cancelled -> onRespondUserInput(topUserInput.requestId, answers, cancelled) },
+                onSubmit = { answers, cancelled ->
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onRespondUserInput(topUserInput.requestId, answers, cancelled)
+                    hideKeyboard()
+                },
             )
         }
 
-        AnimatedVisibility(visible = !autocompleteDismissed && (slashQuery != null || livePtySlashMode)) {
+        val showSlashPopup = !autocompleteDismissed && (slashQuery != null || livePtySlashMode)
+        val showAtPopup = !autocompleteDismissed && slashQuery == null && !livePtySlashMode && atQuery != null && fileSuggestions.isNotEmpty()
+        LaunchedEffect(showSlashPopup || showAtPopup) {
+            onPopupVisibleChanged(showSlashPopup || showAtPopup)
+        }
+
+        AnimatedVisibility(visible = showSlashPopup) {
             SlashCommandAutocompleteSheet(
                 tool = tool,
                 commands = filteredCommands,
@@ -4797,13 +4936,16 @@ private fun SessionComposer(
                     val isSettingsCmd = lower in setOf("model", "models", "thinking", "settings", "config")
                     if (isSettingsCmd && sessionConfig != null) {
                         updateText("")
+                        hideKeyboard()
                         onOpenSettingsSheet()
                     } else if (cmd.argsHint.isBlank() && lower in setOf(
                             "model", "models", "thinking", "settings", "config", "theme", "resume", "tree",
                         )
                     ) {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         updateText("")
                         onSendInput("/${cmd.name}", true)
+                        hideKeyboard()
                     } else {
                         updateText(if (cmd.argsHint.isNotBlank()) "/${cmd.name} " else "/${cmd.name}")
                     }
@@ -4812,7 +4954,7 @@ private fun SessionComposer(
             )
         }
 
-        AnimatedVisibility(visible = !autocompleteDismissed && slashQuery == null && !livePtySlashMode && atQuery != null && fileSuggestions.isNotEmpty()) {
+        AnimatedVisibility(visible = showAtPopup) {
             FileMentionAutocompleteSheet(
                 files = fileSuggestions,
                 onSelectFile = { file ->
@@ -4904,6 +5046,7 @@ private fun SessionComposer(
                     value = fieldState,
                     onValueChange = { next ->
                         autocompleteDismissed = false
+                        SessionDraftCache.put(draftKey, next.text)
                         fieldState = next
                         val nextSlash = extractLeadingSlashQuery(next.text)
                         val nextAt = if (nextSlash == null) {
@@ -5014,6 +5157,8 @@ private fun SessionComposer(
 
                     val hasPayload = text.isNotEmpty() || quotedMessage != null || pendingAttachments.isNotEmpty()
                     val showStop = isRunning && !hasPayload
+                    val showEmptyEnter = !showStop && !hasPayload && allowEmptyEnter
+                    val canSend = showStop || hasPayload || allowEmptyEnter
                     val sendBg = when {
                         showStop -> MaterialTheme.colorScheme.errorContainer
                         hasPayload -> MaterialTheme.colorScheme.primary
@@ -5028,18 +5173,38 @@ private fun SessionComposer(
                         modifier = Modifier
                             .size(48.dp)
                             .clip(CircleShape)
-                            .clickable(onClick = { if (showStop) onInterruptTurn() else dispatchSend() }),
+                            .clickable(
+                                enabled = canSend,
+                                onClick = {
+                                    if (showStop) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        onInterruptTurn()
+                                    } else {
+                                        dispatchSend()
+                                    }
+                                },
+                            ),
                         contentAlignment = Alignment.Center,
                     ) {
                         Surface(
                             shape = CircleShape,
                             color = sendBg,
-                            modifier = Modifier.size(36.dp),
+                            modifier = Modifier
+                                .size(36.dp)
+                                .alpha(if (canSend) 1f else 0.45f),
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
-                                    imageVector = if (showStop) Icons.Rounded.Stop else Icons.Rounded.ArrowUpward,
-                                    contentDescription = if (showStop) "停止生成" else "发送",
+                                    imageVector = when {
+                                        showStop -> Icons.Rounded.Stop
+                                        showEmptyEnter -> Icons.AutoMirrored.Rounded.KeyboardReturn
+                                        else -> Icons.Rounded.ArrowUpward
+                                    },
+                                    contentDescription = when {
+                                        showStop -> "停止生成"
+                                        showEmptyEnter -> "发送回车"
+                                        else -> "发送"
+                                    },
                                     tint = sendFg,
                                     modifier = Modifier.size(19.dp),
                                 )

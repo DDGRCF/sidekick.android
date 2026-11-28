@@ -1,6 +1,7 @@
 package dev.ddgrcf.sidekick.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -63,7 +64,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -73,6 +76,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.ddgrcf.sidekick.ui.theme.SidekickThemeExtras
+import dev.ddgrcf.sidekick.vm.ModelOptionUi
 import dev.ddgrcf.sidekick.vm.RuntimeAnswerInput
 import dev.ddgrcf.sidekick.vm.RuntimeModeUi
 import dev.ddgrcf.sidekick.vm.RuntimeRequestUi
@@ -151,16 +155,41 @@ fun SessionSettingsBottomSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var searchQuery by rememberSaveable { mutableStateOf("") }
-    val filteredModels = remember(config.availableModels, searchQuery) {
+    fun isModelSelected(m: ModelOptionUi): Boolean =
+        m.id == config.model || (config.model.isBlank() && m.current)
+
+    val filteredModels = remember(config.availableModels, config.model, searchQuery) {
         val q = searchQuery.trim().lowercase()
         if (q.isEmpty()) {
-            config.availableModels
+            val selected = config.availableModels.filter(::isModelSelected)
+            val rest = config.availableModels.filterNot(::isModelSelected)
+            selected + rest
         } else {
-            config.availableModels.filter { m ->
-                m.id.lowercase().contains(q) ||
-                    m.name.lowercase().contains(q) ||
-                    m.provider.lowercase().contains(q)
-            }
+            config.availableModels
+                .withIndex()
+                .filter { (_, m) ->
+                    m.id.lowercase().contains(q) ||
+                        m.name.lowercase().contains(q) ||
+                        m.provider.lowercase().contains(q)
+                }
+                .sortedWith(
+                    compareBy<IndexedValue<ModelOptionUi>>(
+                        { (_, m) ->
+                            val id = m.id.lowercase()
+                            val name = m.name.lowercase()
+                            val provider = m.provider.lowercase()
+                            when {
+                                name == q || id == q -> 0
+                                name.startsWith(q) || id.startsWith(q) -> 1
+                                provider.startsWith(q) -> 2
+                                else -> 3
+                            }
+                        },
+                        { (_, m) -> if (isModelSelected(m)) 0 else 1 },
+                        { (idx, _) -> idx },
+                    ),
+                )
+                .map { it.value }
         }
     }
     val thinkingLevels = remember(config.availableThinkingLevels, config.model, config.availableModels) {
@@ -304,6 +333,19 @@ fun SessionSettingsBottomSheet(
                             leadingIcon = {
                                 Icon(Icons.Rounded.Search, contentDescription = null, modifier = Modifier.size(18.dp))
                             },
+                            trailingIcon = if (searchQuery.isNotEmpty()) {
+                                {
+                                    IconButton(onClick = { searchQuery = "" }) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Close,
+                                            contentDescription = "清空搜索",
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    }
+                                }
+                            } else {
+                                null
+                            },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .testTag("settings_sheet_model_search"),
@@ -321,12 +363,13 @@ fun SessionSettingsBottomSheet(
                     }
                 } else {
                     items(filteredModels, key = { "model-${it.id}" }) { m ->
-                        val isSelected = m.id == config.model || (config.model.isBlank() && m.current)
+                        val isSelected = isModelSelected(m)
                         Surface(
                             onClick = { onSelectModel(m.id) },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .defaultMinSize(minHeight = 48.dp),
+                                .defaultMinSize(minHeight = 48.dp)
+                                .testTag("settings_sheet_model_item"),
                             shape = RoundedCornerShape(10.dp),
                             color = if (isSelected) {
                                 MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
@@ -909,8 +952,18 @@ fun WorkspaceDiffSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val extras = SidekickThemeExtras.colors
-    val errorColor = MaterialTheme.colorScheme.error
     val primaryColor = MaterialTheme.colorScheme.primary
+    @Suppress("DEPRECATION")
+    val clipboard = LocalClipboardManager.current
+    val parsedByFile = remember(workspaceContext.gitDiff) {
+        parseUnifiedDiffByFile(workspaceContext.gitDiff)
+    }
+    var expandedFile by rememberSaveable(workspaceContext.cwd, workspaceContext.changedFiles.size) {
+        mutableStateOf(
+            if (workspaceContext.changedFiles.size == 1) workspaceContext.changedFiles.first().path else null,
+        )
+    }
+    var fullscreenPayload by remember { mutableStateOf<Triple<String, String, List<DiffLine>>?>(null) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -963,22 +1016,46 @@ fun WorkspaceDiffSheet(
                 }
             }
 
-            if (workspaceContext.changedFiles.isNotEmpty()) {
-                OutlinedButton(
-                    onClick = {
-                        onAttachSummary()
-                        onDismiss()
-                    },
-                    modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+            if (workspaceContext.changedFiles.isNotEmpty() || workspaceContext.gitDiff.isNotBlank()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text("将改动摘要插入输入框")
+                    if (workspaceContext.changedFiles.isNotEmpty()) {
+                        OutlinedButton(
+                            onClick = {
+                                onAttachSummary()
+                                onDismiss()
+                            },
+                            modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                        ) {
+                            Text("将改动摘要插入输入框")
+                        }
+                    }
+                    if (workspaceContext.gitDiff.isNotBlank()) {
+                        OutlinedButton(
+                            onClick = {
+                                val allLines = parseSinglePatchSnippet(workspaceContext.gitDiff)
+                                fullscreenPayload = Triple(
+                                    "全部变更 (${workspaceContext.gitBranch.ifBlank { "HEAD" }})",
+                                    "${workspaceContext.changedFiles.size} 个文件",
+                                    allLines,
+                                )
+                            },
+                            modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                        ) {
+                            Text("全屏查看全部")
+                        }
+                    }
                 }
             }
 
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 420.dp)
+                    .heightIn(max = 460.dp)
                     .testTag("workspace_diff_sheet"),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
@@ -991,83 +1068,121 @@ fun WorkspaceDiffSheet(
                         )
                     }
                 } else {
-                    items(workspaceContext.changedFiles, key = { "file-${it.path}" }) { f ->
-                        Surface(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerLow,
-                            border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
-                        ) {
-                            Row(
+                    for (f in workspaceContext.changedFiles) {
+                        val fileDiff = parsedByFile[f.path]
+                        val isExpanded = expandedFile == f.path
+                        item(key = "file-${f.path}") {
+                            Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .clickable {
+                                        expandedFile = if (isExpanded) null else f.path
+                                    }
+                                    .testTag("diff_file_row_${f.path}"),
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isExpanded) {
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainerLow
+                                },
+                                border = BorderStroke(
+                                    width = if (isExpanded) 1.dp else 0.5.dp,
+                                    color = if (isExpanded) primaryColor else MaterialTheme.colorScheme.outlineVariant,
+                                ),
                             ) {
-                                Text(
-                                    text = f.status,
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        fontFamily = FontFamily.Monospace,
-                                        fontWeight = FontWeight.Bold,
-                                    ),
-                                    color = primaryColor,
-                                )
-                                Text(
-                                    text = f.path,
-                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                if (f.added > 0 || f.removed > 0) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
                                     Text(
-                                        text = "+${f.added} -${f.removed}",
-                                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                                        color = extras.success,
+                                        text = f.status,
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontFamily = FontFamily.Monospace,
+                                            fontWeight = FontWeight.Bold,
+                                        ),
+                                        color = primaryColor,
+                                    )
+                                    Text(
+                                        text = f.path,
+                                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    if (f.added > 0 || f.removed > 0) {
+                                        Text(
+                                            text = "+${f.added} -${f.removed}",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                            color = extras.success,
+                                        )
+                                    }
+                                    Icon(
+                                        imageVector = if (isExpanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                                        contentDescription = if (isExpanded) "收起文件 Diff" else "展开文件 Diff",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp),
                                     )
                                 }
                             }
                         }
-                    }
-                }
-                if (workspaceContext.gitDiff.isNotBlank()) {
-                    item(key = "diff-body") {
-                        val diffText = remember(workspaceContext.gitDiff, extras.success, errorColor, primaryColor, extras.codeText) {
-                            buildAnnotatedString {
-                                workspaceContext.gitDiff.take(12000).lines().forEachIndexed { idx, ln ->
-                                    if (idx > 0) append('\n')
-                                    val c = when {
-                                        ln.startsWith("+") && !ln.startsWith("+++") -> extras.success
-                                        ln.startsWith("-") && !ln.startsWith("---") -> errorColor
-                                        ln.startsWith("@@") || ln.startsWith("diff ") -> primaryColor
-                                        else -> extras.codeText.copy(alpha = 0.8f)
+                        if (isExpanded) {
+                            item(key = "diff-${f.path}") {
+                                if (fileDiff != null && fileDiff.lines.isNotEmpty()) {
+                                    DiffCodeBlock(
+                                        lines = fileDiff.lines,
+                                        maxLines = 80,
+                                        onCopyDiff = {
+                                            clipboard.setText(AnnotatedString(fileDiff.lines.joinToString("\n") { it.text }))
+                                        },
+                                        onOpenFullscreen = {
+                                            fullscreenPayload = Triple(
+                                                f.path,
+                                                formatDiffStats(fileDiff.added, fileDiff.removed),
+                                                fileDiff.lines,
+                                            )
+                                        },
+                                    )
+                                } else {
+                                    Surface(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                                    ) {
+                                        Text(
+                                            text = when {
+                                                loading -> "正在加载该文件的 Diff 预览…"
+                                                f.status == "D" -> "该文件已删除"
+                                                else -> "暂无可预览文本差异（可能是二进制文件、空文件或超过单次 Diff 上限）"
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(12.dp),
+                                        )
                                     }
-                                    withStyle(SpanStyle(color = c)) { append(ln) }
                                 }
-                            }
-                        }
-                        Surface(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(10.dp),
-                            color = extras.codeBg,
-                        ) {
-                            SelectionContainer {
-                                Text(
-                                    text = diffText,
-                                    fontFamily = FontFamily.Monospace,
-                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, lineHeight = 17.sp),
-                                    modifier = Modifier
-                                        .horizontalScroll(rememberScrollState())
-                                        .padding(12.dp),
-                                )
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    fullscreenPayload?.let { (title, subtitle, lines) ->
+        FullscreenDiffDialog(
+            title = title,
+            subtitle = subtitle,
+            lines = lines,
+            onCopyDiff = {
+                clipboard.setText(AnnotatedString(lines.joinToString("\n") { it.text }))
+            },
+            onDismiss = { fullscreenPayload = null },
+        )
     }
 }
 
