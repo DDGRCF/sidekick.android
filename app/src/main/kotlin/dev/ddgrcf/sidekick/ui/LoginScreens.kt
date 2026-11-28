@@ -66,6 +66,7 @@ fun LoginScreen(
     vm: AuthViewModel,
     onLoggedIn: () -> Unit,
     onRequireTotp: (ticket: String, enrolled: Boolean) -> Unit,
+    onDevLogin: (() -> Unit)? = null,
     onDemoPreview: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
@@ -97,6 +98,7 @@ fun LoginScreen(
             val url = vm.buildGitHubStartUrl()
             CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(url))
         },
+        onDevLoginClick = onDevLogin,
         onDemoPreviewClick = onDemoPreview,
     )
 }
@@ -108,6 +110,7 @@ fun LoginContent(
     error: String?,
     onRelayUrlChange: (String) -> Unit,
     onGitHubLoginClick: () -> Unit,
+    onDevLoginClick: (() -> Unit)? = null,
     onDemoPreviewClick: (() -> Unit)? = null,
 ) {
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
@@ -151,6 +154,14 @@ fun LoginContent(
                 shape = RoundedCornerShape(12.dp),
                 modifier = Modifier.fillMaxWidth(),
             )
+            if (onDevLoginClick != null) {
+                TextButton(
+                    onClick = { onRelayUrlChange("http://127.0.0.1:18090") },
+                    modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                ) {
+                    Text("填入本机调试地址 (127.0.0.1:18090)")
+                }
+            }
             Spacer(Modifier.height(14.dp))
             Button(
                 onClick = onGitHubLoginClick,
@@ -168,6 +179,19 @@ fun LoginContent(
                     )
                 } else {
                     Text("使用 GitHub 登录")
+                }
+            }
+            if (onDevLoginClick != null) {
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(
+                    onClick = onDevLoginClick,
+                    enabled = !loading && relayUrl.isNotBlank(),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 48.dp),
+                ) {
+                    Text("本地开发登录 (Debug)")
                 }
             }
             if (onDemoPreviewClick != null) {

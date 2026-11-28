@@ -1,5 +1,6 @@
 package dev.ddgrcf.sidekick
 
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.click
@@ -9,6 +10,7 @@ import androidx.compose.ui.test.hasStateDescription
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -35,9 +37,24 @@ import dev.ddgrcf.sidekick.ui.SessionContent
 import dev.ddgrcf.sidekick.ui.SettingsContent
 import dev.ddgrcf.sidekick.ui.theme.SidekickTheme
 import dev.ddgrcf.sidekick.vm.MediaKind
+import dev.ddgrcf.sidekick.vm.ModelOptionUi
+import dev.ddgrcf.sidekick.vm.InteractiveDialogOptionUi
+import dev.ddgrcf.sidekick.vm.InteractiveDialogState
+import dev.ddgrcf.sidekick.vm.OptimisticUserMessage
 import dev.ddgrcf.sidekick.vm.PendingAttachment
+import dev.ddgrcf.sidekick.vm.RuntimeAnswerInput
+import dev.ddgrcf.sidekick.vm.RuntimeModeUi
+import dev.ddgrcf.sidekick.vm.RuntimeQuestionUi
+import dev.ddgrcf.sidekick.vm.RuntimeRequestKindUi
+import dev.ddgrcf.sidekick.vm.RuntimeRequestOptionUi
+import dev.ddgrcf.sidekick.vm.RuntimeRequestUi
+import dev.ddgrcf.sidekick.vm.SessionConfigUi
 import dev.ddgrcf.sidekick.vm.SlashCommandSourceUi
 import dev.ddgrcf.sidekick.vm.SlashCommandSuggestion
+import dev.ddgrcf.sidekick.vm.StreamingMessageState
+import dev.ddgrcf.sidekick.vm.WorkspaceContextUi
+import dev.ddgrcf.sidekick.vm.ChangedFileUi
+import dev.ddgrcf.sidekick.vm.DiagnosticItemUi
 import dev.ddgrcf.sidekick.vm.WorkspaceFileSuggestion
 import dev.ddgrcf.sidekick.vm.coreBuiltinSlashCommands
 import org.junit.Assert.assertEquals
@@ -70,6 +87,28 @@ class AppUiTest {
         composeRule.onNodeWithText("Sidekick Remote").assertIsDisplayed()
         composeRule.onNodeWithText("使用 GitHub 登录").performClick()
         assertTrue(clicked)
+    }
+
+    @Test
+    fun loginScreenSupportsDebugDevUrlFillAndDevLogin() {
+        var currentUrl = "https://relay.example.com"
+        var devClicked = false
+        composeRule.setContent {
+            SidekickTheme(darkTheme = true) {
+                LoginContent(
+                    relayUrl = currentUrl,
+                    loading = false,
+                    error = null,
+                    onRelayUrlChange = { currentUrl = it },
+                    onGitHubLoginClick = {},
+                    onDevLoginClick = { devClicked = true },
+                )
+            }
+        }
+        composeRule.onNodeWithText("填入本机调试地址 (127.0.0.1:18090)").performClick()
+        assertEquals("http://127.0.0.1:18090", currentUrl)
+        composeRule.onNodeWithText("本地开发登录 (Debug)").performClick()
+        assertTrue(devClicked)
     }
 
     @Test
@@ -211,11 +250,16 @@ class AppUiTest {
                 )
             }
         }
+        composeRule.mainClock.advanceTimeBy(2600)
+        composeRule.waitForIdle()
         composeRule.onNodeWithText("Chat").assertIsDisplayed()
         composeRule.onNodeWithText("Terminal").assertIsDisplayed()
         composeRule.onNodeWithText("kotlin").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("val x = 1").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithText("bash (DONE)").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("已执行 1 步 · 运行 1 条命令").performScrollTo().assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("运行命令").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("ls").performScrollTo().assertIsDisplayed()
     }
 
     @Test
@@ -462,6 +506,7 @@ class AppUiTest {
     @Test
     fun pairContentValidatesManualPairingAndShowsPermissionAction() {
         var manualCalled: Pair<String, String>? = null
+        var qrJsonCalled: String? = null
         composeRule.setContent {
             SidekickTheme(darkTheme = true) {
                 PairContent(
@@ -470,7 +515,7 @@ class AppUiTest {
                     busy = false,
                     paired = false,
                     onBack = {},
-                    onPairQrJson = {},
+                    onPairQrJson = { qrJsonCalled = it },
                     onPairManualCode = { code, psk -> manualCalled = code to psk },
                 )
             }
@@ -480,6 +525,10 @@ class AppUiTest {
         composeRule.onNodeWithText("一次性 PSK (base64)").performTextInput("AAAA")
         composeRule.onNodeWithText("确认配对").performClick()
         assertEquals("123456" to "AAAA", manualCalled)
+
+        composeRule.onNodeWithText("6 位配对码 (user_code)").performTextReplacement("""{"v":1,"eid":"e1","pk":"pk1","psk":"psk1","relay":"ws://127.0.0.1:18090"}""")
+        composeRule.onNodeWithText("确认配对").performClick()
+        assertEquals("""{"v":1,"eid":"e1","pk":"pk1","psk":"psk1","relay":"ws://127.0.0.1:18090"}""", qrJsonCalled)
     }
 
     @Test
@@ -637,6 +686,35 @@ class AppUiTest {
     }
 
     @Test
+    fun homeSeparatesUnpairedBridgesAndRoutesClickToPair() {
+        val bridges = listOf(
+            RelayDevice(id = "b-unpaired", kind = "bridge", name = "fedora", pubkey = "AAAA", online = true),
+        )
+        var pairOpened = false
+        var bridgeOpened = false
+        composeRule.setContent {
+            SidekickTheme(darkTheme = true) {
+                HomeContent(
+                    connectionState = ConnectionState.CONNECTED,
+                    bridges = bridges,
+                    pairedBridgeIds = emptySet(),
+                    refreshing = false,
+                    error = null,
+                    onRefresh = {},
+                    onOpenBridge = { bridgeOpened = true },
+                    onOpenPair = { pairOpened = true },
+                    onOpenSettings = {},
+                )
+            }
+        }
+        composeRule.onNodeWithText("账号下待配对电脑").assertIsDisplayed()
+        composeRule.onNodeWithText("待配对").assertIsDisplayed()
+        composeRule.onNodeWithText("fedora").performClick()
+        assertTrue(pairOpened)
+        assertTrue(!bridgeOpened)
+    }
+
+    @Test
     fun settingsContentShowsOfflineTagOnOfflineDevices() {
         val devices = listOf(
             RelayDevice(id = "p1", kind = "phone", name = "Pixel", pubkey = "AAAA", online = true),
@@ -664,5 +742,689 @@ class AppUiTest {
         }
         composeRule.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("bridge · 离线"))
         composeRule.onNodeWithText("bridge · 离线").assertIsDisplayed()
+    }
+
+    @Test
+    fun sessionChatRendersOptimisticUserAndLiveStreamingDraft() {
+        composeRule.setContent {
+            SidekickTheme(darkTheme = true) {
+                SessionContent(
+                    title = "codex session",
+                    tool = "codex",
+                    structuredHistory = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = emptyList(),
+                    optimisticUserMessages = listOf(
+                        OptimisticUserMessage(id = "opt-1", text = "Explain streaming draft", afterSeq = 0L),
+                    ),
+                    streamingDraft = StreamingMessageState(
+                        active = true,
+                        text = "",
+                        model = "gpt-5.1-codex",
+                    ),
+                    decodeParts = { emptyList() },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { _, _ -> },
+                    onSendKey = {},
+                    onFocusChanged = {},
+                )
+            }
+        }
+        composeRule.onNodeWithText("Explain streaming draft").assertIsDisplayed()
+        composeRule.onNodeWithText("gpt-5.1-codex").assertIsDisplayed()
+        composeRule.onNodeWithText("思考中…").assertIsDisplayed()
+    }
+
+    @Test
+    fun sessionChatStreamsMarkdownDraftProgressively() {
+        composeRule.setContent {
+            SidekickTheme(darkTheme = false) {
+                SessionContent(
+                    title = "claude session",
+                    tool = "claude",
+                    structuredHistory = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = emptyList(),
+                    streamingDraft = StreamingMessageState(
+                        active = true,
+                        text = "----working-----\nPatch applied cleanly.",
+                        model = "claude-sonnet-4",
+                    ),
+                    decodeParts = { emptyList() },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { _, _ -> },
+                    onSendKey = {},
+                    onFocusChanged = {},
+                )
+            }
+        }
+        composeRule.mainClock.advanceTimeBy(1500)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("streaming_assistant_turn").assertIsDisplayed()
+        composeRule.onNodeWithText("claude-sonnet-4").assertIsDisplayed()
+        composeRule.onNodeWithText("Patch applied cleanly. ▍").assertIsDisplayed()
+    }
+
+    @Test
+    fun sessionChatRendersInteractiveQuestionCardAndDispatchesOptionKeys() {
+        var sentKeys: List<Key> = emptyList()
+        val qJson = """{"questions":[{"header":"意图","question":"你想让我做什么？","options":[{"label":"生成图片","description":"画一张图"},{"label":"写一段文字","description":"创作文案"}]}]}"""
+        val parts = listOf(
+            UiPart.Text("请先选择方向："),
+            UiPart.ToolCall("q1", "ask_user_question", qJson, "TOOL_CALL_STATUS_COMPLETED"),
+        )
+        composeRule.setContent {
+            SidekickTheme(darkTheme = false) {
+                SessionContent(
+                    title = "pi session",
+                    tool = "pi",
+                    structuredHistory = true,
+                    live = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = listOf(MessageEntity("b1", "c1", 1, "ROLE_ASSISTANT", "[]", 1L, "deepseek-v4")),
+                    decodeParts = { parts },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { _, _ -> },
+                    onSendKey = {},
+                    onSendKeys = { sentKeys = it },
+                    onFocusChanged = {},
+                )
+            }
+        }
+        composeRule.mainClock.advanceTimeBy(2600)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("interactive_question_card").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("你想让我做什么？").assertIsDisplayed()
+        composeRule.onNodeWithText("写一段文字").performScrollTo().performClick()
+        assertEquals(listOf(Key.KEY_DOWN, Key.KEY_ENTER), sentKeys)
+    }
+
+    @Test
+    fun sessionChatRendersLiveThinkingAndInteractiveModelDialogOverlay() {
+        var sentKeys: List<Key> = emptyList()
+        var dismissed = false
+        composeRule.setContent {
+            SidekickTheme(darkTheme = false) {
+                SessionContent(
+                    title = "pi session",
+                    tool = "pi",
+                    structuredHistory = true,
+                    live = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = emptyList(),
+                    streamingDraft = StreamingMessageState(
+                        active = true,
+                        thinking = "先检查可用模型列表",
+                        text = "实时输出正文",
+                        status = "正在生成回复…",
+                        model = "deepseek/deepseek-v4.1-flash",
+                    ),
+                    interactiveDialog = InteractiveDialogState(
+                        open = true,
+                        kind = "model",
+                        title = "选择模型",
+                        subtitle = "(1/2)",
+                        searchable = true,
+                        selectedIndex = 0,
+                        options = listOf(
+                            InteractiveDialogOptionUi("deepseek/deepseek-v4.1-flash", "[commandcode] · default", selected = true, current = true),
+                            InteractiveDialogOptionUi("claude-sonnet-4", "[anthropic]", selected = false, current = false),
+                        ),
+                    ),
+                    decodeParts = { emptyList() },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { _, _ -> },
+                    onSendKey = {},
+                    onSendKeys = { sentKeys = it },
+                    onDismissDialog = { dismissed = true },
+                    onFocusChanged = {},
+                )
+            }
+        }
+        composeRule.mainClock.advanceTimeBy(2600)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("streaming_thinking_box").assertIsDisplayed()
+        composeRule.onNodeWithText("实时输出正文 ▍").assertIsDisplayed()
+        composeRule.onNodeWithTag("interactive_dialog_overlay").assertIsDisplayed()
+        composeRule.onNodeWithText("选择模型").assertIsDisplayed()
+        composeRule.onNodeWithText("claude-sonnet-4").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        assertEquals(listOf(Key.KEY_DOWN, Key.KEY_ENTER), sentKeys)
+        composeRule.onNodeWithText("取消 (Esc)").performClick()
+        assertTrue(dismissed)
+    }
+
+    @Test
+    fun sessionChatMergesLiveStreamingIntoActiveAssistantTurnWithoutDuplicateHeader() {
+        val partsByKey = mapOf(
+            "u1" to listOf(UiPart.Text("排查构建失败原因")),
+            "a1" to listOf(
+                UiPart.Thinking("先运行单元测试"),
+                UiPart.Text("我先执行测试定位问题。"),
+                UiPart.ToolCall("c1", "bash", """{"command":"go test ./..."}""", "TOOL_CALL_STATUS_COMPLETED"),
+            ),
+            "t1" to listOf(UiPart.ToolResult("c1", "PASS", isError = false, truncated = false)),
+        )
+        composeRule.setContent {
+            SidekickTheme(darkTheme = false) {
+                SessionContent(
+                    title = "pi session",
+                    tool = "pi",
+                    structuredHistory = true,
+                    live = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = listOf(
+                        MessageEntity("b1", "c1", 1, "ROLE_USER", "u1", 1L, null),
+                        MessageEntity("b1", "c1", 2, "ROLE_ASSISTANT", "a1", 2L, "deepseek/deepseek-v4.1-flash"),
+                        MessageEntity("b1", "c1", 3, "ROLE_TOOL", "t1", 3L, null),
+                    ),
+                    streamingDraft = StreamingMessageState(
+                        active = true,
+                        thinking = "正在总结测试结果",
+                        text = "结论已整理完成",
+                        status = "正在生成回复…",
+                        model = "deepseek/deepseek-v4.1-flash",
+                    ),
+                    decodeParts = { partsByKey[it].orEmpty() },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { _, _ -> },
+                    onSendKey = {},
+                    onFocusChanged = {},
+                )
+            }
+        }
+        composeRule.mainClock.advanceTimeBy(2600)
+        composeRule.waitForIdle()
+        // Live streaming merges into the single active Assistant turn — no duplicate header or second bubble.
+        composeRule.onAllNodesWithText("deepseek/deepseek-v4.1-flash").assertCountEquals(1)
+        composeRule.onNodeWithTag("streaming_assistant_turn").assertDoesNotExist()
+        composeRule.onNodeWithTag("streaming_thinking_box").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("结论已整理完成 ▍").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun sessionSlashModelItemImmediatelySubmitsBareModelCommand() {
+        var sentInput: Pair<String, Boolean>? = null
+        composeRule.setContent {
+            SidekickTheme(darkTheme = false) {
+                SessionContent(
+                    title = "pi session",
+                    tool = "pi",
+                    structuredHistory = true,
+                    live = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = emptyList(),
+                    decodeParts = { emptyList() },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { t, submit -> sentInput = t to submit },
+                    onSendKey = {},
+                    onFocusChanged = {},
+                )
+            }
+        }
+        composeRule.onNodeWithContentDescription("斜杠命令").performClick()
+        composeRule.onNodeWithText("/model").assertIsDisplayed().performClick()
+        assertEquals("/model" to true, sentInput)
+    }
+
+    @Test
+    fun sessionComposerConfigPillSwitchesModelAndThinkingWhileTypingAndStreaming() {
+        var pickedModel: String? = null
+        var pickedThinking: String? = null
+        val cfg = SessionConfigUi(
+            sessionId = "pi-rpc-1",
+            model = "deepseek/deepseek-v4.1-flash",
+            thinkingLevel = "high",
+            runtimeMode = RuntimeModeUi.APPROVAL_REQUIRED,
+            availableModels = listOf(
+                ModelOptionUi(
+                    id = "deepseek/deepseek-v4.1-flash",
+                    provider = "commandcode",
+                    name = "DeepSeek V4.1 Flash",
+                    reasoning = true,
+                    thinkingLevels = listOf("off", "medium", "high", "xhigh"),
+                    current = true,
+                ),
+                ModelOptionUi(
+                    id = "gpt-5.6-luna",
+                    provider = "openai-codex",
+                    name = "GPT-5.6 Luna",
+                    reasoning = true,
+                    thinkingLevels = listOf("off", "medium", "high", "xhigh"),
+                ),
+            ),
+            availableThinkingLevels = listOf("off", "medium", "high", "xhigh"),
+            supportedRuntimeModes = listOf(RuntimeModeUi.APPROVAL_REQUIRED, RuntimeModeUi.AUTO_ACCEPT_EDITS),
+            isRunning = true,
+        )
+        composeRule.setContent {
+            SidekickTheme(darkTheme = false) {
+                SessionContent(
+                    title = "pi rpc",
+                    tool = "pi",
+                    structuredHistory = true,
+                    isRpcSession = true,
+                    live = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = emptyList(),
+                    streamingDraft = StreamingMessageState(
+                        active = true,
+                        thinking = "分析依赖",
+                        text = "正在生成部分内容",
+                        model = "deepseek/deepseek-v4.1-flash",
+                    ),
+                    sessionConfig = cfg,
+                    decodeParts = { emptyList() },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { _, _ -> },
+                    onSendKey = {},
+                    onSelectModel = { pickedModel = it },
+                    onSelectThinkingLevel = { pickedThinking = it },
+                    onFocusChanged = {},
+                )
+            }
+        }
+        composeRule.mainClock.advanceTimeBy(1200)
+        composeRule.waitForIdle()
+        // Native RPC session does not expose a broken Terminal tab.
+        composeRule.onNodeWithText("Terminal").assertDoesNotExist()
+        // Type a partial prompt in the composer first.
+        composeRule.onNode(hasSetTextAction()).performTextInput("正在输入一半的问题")
+        composeRule.onNodeWithTag("composer_config_pill").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("session_settings_sheet").assertIsDisplayed()
+        composeRule.onNodeWithTag("session_settings_sheet").performScrollToNode(hasText("xhigh"))
+        composeRule.onNodeWithText("xhigh").performClick()
+        assertEquals("xhigh", pickedThinking)
+        composeRule.onNodeWithTag("session_settings_sheet").performScrollToNode(hasText("GPT-5.6 Luna"))
+        composeRule.onNodeWithText("GPT-5.6 Luna").performClick()
+        assertEquals("gpt-5.6-luna", pickedModel)
+        composeRule.onNodeWithContentDescription("关闭设置").performClick()
+        composeRule.waitForIdle()
+        // Partial typed text remains completely undisturbed.
+        composeRule.onNodeWithText("正在输入一半的问题").assertIsDisplayed()
+    }
+
+    @Test
+    fun sessionDockedApprovalCardHandlesDecisionsAndReplyToRedirect() {
+        val calls = mutableListOf<Triple<String, String, String>>()
+        val approval = RuntimeRequestUi(
+            requestId = "req-app-1",
+            kind = RuntimeRequestKindUi.APPROVAL,
+            title = "允许执行 bash？",
+            detail = "rm -rf build && ./gradlew test",
+            toolName = "bash",
+        )
+        composeRule.setContent {
+            SidekickTheme(darkTheme = true) {
+                SessionContent(
+                    title = "codex rpc",
+                    tool = "codex",
+                    structuredHistory = true,
+                    isRpcSession = true,
+                    live = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = emptyList(),
+                    pendingRuntimeRequests = listOf(approval),
+                    decodeParts = { emptyList() },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { _, _ -> },
+                    onSendKey = {},
+                    onRespondApproval = { id, dec, fb -> calls += Triple(id, dec, fb) },
+                    onFocusChanged = {},
+                )
+            }
+        }
+        composeRule.onNodeWithTag("pending_approval_card").assertIsDisplayed()
+        composeRule.onNodeWithText("输入反馈以拒绝并引导 Agent…").assertIsDisplayed()
+        composeRule.onNodeWithText("本会话允许").performScrollTo().performClick()
+        assertEquals(Triple("req-app-1", "acceptForSession", ""), calls.last())
+
+        // Sending composer text while an approval is pending declines and redirects the agent.
+        composeRule.onNode(hasSetTextAction()).performTextInput("改用单测命令")
+        composeRule.onNodeWithContentDescription("发送").performClick()
+        assertEquals(Triple("req-app-1", "decline", "改用单测命令"), calls.last())
+    }
+
+    @Test
+    fun sessionDockedUserInputCardSupportsSelectionCollapseAndSubmit() {
+        var submitted: Triple<String, List<RuntimeAnswerInput>, Boolean>? = null
+        val userReq = RuntimeRequestUi(
+            requestId = "req-ui-1",
+            kind = RuntimeRequestKindUi.USER_INPUT,
+            title = "请确认实现细节",
+            questions = listOf(
+                RuntimeQuestionUi(
+                    id = "q1",
+                    header = "架构",
+                    question = "选择运行时通道",
+                    options = listOf(
+                        RuntimeRequestOptionUi("rpc", "Native RPC", "直接结构化流"),
+                        RuntimeRequestOptionUi("tmux", "Legacy Tmux"),
+                    ),
+                    multiSelect = false,
+                    allowCustomAnswer = true,
+                ),
+                RuntimeQuestionUi(
+                    id = "q2",
+                    header = "范围",
+                    question = "覆盖哪些端",
+                    options = listOf(
+                        RuntimeRequestOptionUi("go", "Go Bridge"),
+                        RuntimeRequestOptionUi("android", "Android App"),
+                    ),
+                    multiSelect = true,
+                    allowCustomAnswer = false,
+                ),
+            ),
+        )
+        composeRule.setContent {
+            SidekickTheme(darkTheme = false) {
+                SessionContent(
+                    title = "claude rpc",
+                    tool = "claude",
+                    structuredHistory = true,
+                    isRpcSession = true,
+                    live = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = emptyList(),
+                    pendingRuntimeRequests = listOf(userReq),
+                    decodeParts = { emptyList() },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { _, _ -> },
+                    onSendKey = {},
+                    onRespondUserInput = { id, ans, c -> submitted = Triple(id, ans, c) },
+                    onFocusChanged = {},
+                )
+            }
+        }
+        composeRule.onNodeWithTag("pending_user_input_card").assertIsDisplayed()
+        // Collapse to pill and expand back.
+        composeRule.onNodeWithContentDescription("收起提问卡片").performClick()
+        composeRule.onNodeWithTag("pending_user_input_pill").assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag("pending_user_input_card").assertIsDisplayed()
+
+        composeRule.onNodeWithTag("user_input_questions_list").performScrollToNode(hasText("Native RPC"))
+        composeRule.onNodeWithText("Native RPC").performClick()
+        composeRule.onNodeWithTag("user_input_questions_list").performScrollToNode(hasText("Go Bridge"))
+        composeRule.onNodeWithText("Go Bridge").performClick()
+        composeRule.onNodeWithTag("user_input_questions_list").performScrollToNode(hasText("Android App"))
+        composeRule.onNodeWithText("Android App").performClick()
+        composeRule.onNodeWithText("提交回答").performClick()
+
+        val res = submitted!!
+        assertEquals("req-ui-1", res.first)
+        assertEquals(false, res.third)
+        assertEquals(listOf("rpc"), res.second[0].selectedValues)
+        assertEquals(listOf("go", "android"), res.second[1].selectedValues)
+    }
+
+    @Test
+    fun sessionStreamingShowsStopButtonWhenComposerEmpty() {
+        var interrupted = false
+        composeRule.setContent {
+            SidekickTheme(darkTheme = true) {
+                SessionContent(
+                    title = "pi rpc",
+                    tool = "pi",
+                    structuredHistory = true,
+                    isRpcSession = true,
+                    live = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = emptyList(),
+                    streamingDraft = StreamingMessageState(active = true, text = "生成中"),
+                    decodeParts = { emptyList() },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { _, _ -> },
+                    onSendKey = {},
+                    onInterruptTurn = { interrupted = true },
+                    onFocusChanged = {},
+                )
+            }
+        }
+        composeRule.onNodeWithContentDescription("停止生成").assertIsDisplayed().performClick()
+        assertTrue(interrupted)
+    }
+
+    @Test
+    fun turnWorkLogAutoExpandsLiveAndShowsRunningToolOutputThenCollapsesOnDone() {
+        val runningParts = mapOf(
+            "u1" to listOf(UiPart.Text("跑构建")),
+            "a1" to listOf(
+                UiPart.Thinking("先检查测试输出"),
+                UiPart.ToolCall("c1", "bash", """{"command":"./scripts/test"}""", "TOOL_CALL_STATUS_RUNNING"),
+            ),
+            "t1" to listOf(UiPart.ToolResult("c1", "running test case 1\nstreaming live line", isError = false, truncated = false)),
+        )
+        composeRule.setContent {
+            SidekickTheme(darkTheme = false) {
+                SessionContent(
+                    title = "codex rpc",
+                    tool = "codex",
+                    structuredHistory = true,
+                    isRpcSession = true,
+                    live = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = listOf(
+                        MessageEntity("b1", "c1", 1, "ROLE_USER", "u1", 1L, null),
+                        MessageEntity("b1", "c1", 2, "ROLE_ASSISTANT", "a1", 2L, "gpt-6.1-terra"),
+                        MessageEntity("b1", "c1", 3, "ROLE_TOOL", "t1", 3L, null),
+                    ),
+                    streamingDraft = StreamingMessageState(
+                        active = true,
+                        thinking = "正在分析命令结果",
+                        status = "运行 ./scripts/test",
+                        model = "gpt-6.1-terra",
+                    ),
+                    decodeParts = { runningParts[it].orEmpty() },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { _, _ -> },
+                    onSendKey = {},
+                    onFocusChanged = {},
+                )
+            }
+        }
+        composeRule.mainClock.advanceTimeBy(1000)
+        composeRule.waitForIdle()
+        // Auto-expanded while running: thinking + live stdout are visible without tapping.
+        composeRule.onNodeWithText("先检查测试输出").assertIsDisplayed()
+        composeRule.onNodeWithText("running test case 1\nstreaming live line").assertIsDisplayed()
+        composeRule.onNodeWithTag("streaming_thinking_box").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun completedTurnWorkLogExpandsThinkingDirectlyOnSingleTap() {
+        val doneParts = mapOf(
+            "u1" to listOf(UiPart.Text("总结情况")),
+            "a1" to listOf(
+                UiPart.Thinking("已完成全部推理过程"),
+                UiPart.ToolCall("c1", "read_file", """{"Path":"/repo/Main.kt"}""", "TOOL_CALL_STATUS_COMPLETED"),
+                UiPart.Text("处理完成。"),
+            ),
+            "t1" to listOf(UiPart.ToolResult("c1", "ok", isError = false, truncated = false)),
+        )
+        composeRule.setContent {
+            SidekickTheme(darkTheme = false) {
+                SessionContent(
+                    title = "pi rpc",
+                    tool = "pi",
+                    structuredHistory = true,
+                    isRpcSession = true,
+                    live = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = listOf(
+                        MessageEntity("b1", "c1", 1, "ROLE_USER", "u1", 1L, null),
+                        MessageEntity("b1", "c1", 2, "ROLE_ASSISTANT", "a1", 2L, "deepseek-v4.1"),
+                        MessageEntity("b1", "c1", 3, "ROLE_TOOL", "t1", 3L, null),
+                    ),
+                    streamingDraft = StreamingMessageState(active = false),
+                    decodeParts = { doneParts[it].orEmpty() },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { _, _ -> },
+                    onSendKey = {},
+                    onFocusChanged = {},
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        // Completed card starts collapsed, then reveals thinking directly on 1 tap without double collapse.
+        composeRule.onNodeWithText("已完成全部推理过程").assertDoesNotExist()
+        composeRule.onNodeWithTag("turn_work_log_card").performClick()
+        composeRule.mainClock.advanceTimeBy(1000)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("已完成全部推理过程").assertIsDisplayed()
+    }
+
+    @Test
+    fun sidekickContextBarShowsGitDiffNvimContextAndOpenInNvim() {
+        var openedInNvim = false
+        var sentPayload = ""
+        val wc = WorkspaceContextUi(
+            cwd = "/repo/sidekick.nvim",
+            gitBranch = "feat-deep-bind",
+            changedFiles = listOf(ChangedFileUi("lua/sidekick/init.lua", "M", added = 5, removed = 1)),
+            gitDiff = "diff --git a/lua/sidekick/init.lua b/lua/sidekick/init.lua\n+setup()",
+            nvimConnected = true,
+            nvimServer = "/run/user/1000/nvim.1.0",
+            nvimFile = "lua/sidekick/init.lua",
+            nvimLine = 18,
+            diagnostics = listOf(DiagnosticItemUi("lua/sidekick/init.lua", 18, 3, "error", "undefined field", "lua_ls")),
+            openBuffers = listOf("lua/sidekick/init.lua"),
+        )
+        composeRule.setContent {
+            SidekickTheme(darkTheme = false) {
+                SessionContent(
+                    title = "codex rpc",
+                    tool = "codex",
+                    sessionId = "codex 1234 abcd",
+                    structuredHistory = true,
+                    isRpcSession = true,
+                    live = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = emptyList(),
+                    workspaceContext = wc,
+                    turnStartedMs = 1000L,
+                    decodeParts = { emptyList() },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { txt, _ -> sentPayload = txt },
+                    onSendKey = {},
+                    onOpenInNvim = { openedInNvim = true },
+                    onFocusChanged = {},
+                )
+            }
+        }
+        composeRule.onNodeWithTag("context_bar_git_pill").assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag("workspace_diff_sheet").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("关闭变更").performClick()
+
+        composeRule.onNodeWithTag("context_bar_nvim_pill").assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag("nvim_context_sheet").assertIsDisplayed()
+        composeRule.onNodeWithText("插入当前文件").performClick()
+        composeRule.onNodeWithContentDescription("发送").performClick()
+        assertEquals("@lua/sidekick/init.lua:18 ", sentPayload)
+
+        composeRule.onNodeWithContentDescription("更多操作").performClick()
+        composeRule.onNodeWithText("在 Neovim 打开").performClick()
+        assertTrue(openedInNvim)
+    }
+
+    @Test
+    fun resumeCommandFallbackDialogCopiesAndDismisses() {
+        var dismissed = false
+        composeRule.setContent {
+            SidekickTheme(darkTheme = false) {
+                SessionContent(
+                    title = "codex rpc",
+                    tool = "codex",
+                    sessionId = "codex 1234 abcd",
+                    structuredHistory = true,
+                    isRpcSession = true,
+                    live = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = emptyList(),
+                    lastResumeCommand = """cd "/repo/sidekick.nvim" && codex resume "thr-123"""",
+                    onDismissResumeCommand = { dismissed = true },
+                    decodeParts = { emptyList() },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { _, _ -> },
+                    onSendKey = {},
+                    onFocusChanged = {},
+                )
+            }
+        }
+        composeRule.onNodeWithText("在本地终端接续会话").assertIsDisplayed()
+        composeRule.onNodeWithText("""cd "/repo/sidekick.nvim" && codex resume "thr-123"""").assertIsDisplayed()
+        composeRule.onNodeWithText("复制命令").performClick()
+        assertTrue(dismissed)
     }
 }

@@ -10,14 +10,18 @@ import dev.ddgrcf.sidekick.core.store.HistoryEntity
 import dev.ddgrcf.sidekick.core.store.MessageEntity
 import dev.ddgrcf.sidekick.core.store.SessionEntity
 import dev.ddgrcf.sidekick.core.store.SidekickDatabase
+import dev.ddgrcf.sidekick.proto.v1.Backend
 import dev.ddgrcf.sidekick.proto.v1.FileEntry
 import dev.ddgrcf.sidekick.proto.v1.Frame
 import dev.ddgrcf.sidekick.proto.v1.GetMediaRequest
 import dev.ddgrcf.sidekick.proto.v1.GetMessagesRequest
+import dev.ddgrcf.sidekick.proto.v1.GetSessionConfigRequest
+import dev.ddgrcf.sidekick.proto.v1.GetWorkspaceContextRequest
 import dev.ddgrcf.sidekick.proto.v1.HandoverSessionRequest
 import dev.ddgrcf.sidekick.proto.v1.Hello
 import dev.ddgrcf.sidekick.proto.v1.HistoryEntry
 import dev.ddgrcf.sidekick.proto.v1.InputRequest
+import dev.ddgrcf.sidekick.proto.v1.InterruptTurnRequest
 import dev.ddgrcf.sidekick.proto.v1.Key
 import dev.ddgrcf.sidekick.proto.v1.KeysRequest
 import dev.ddgrcf.sidekick.proto.v1.ListCommandsRequest
@@ -26,9 +30,16 @@ import dev.ddgrcf.sidekick.proto.v1.ListHistoryRequest
 import dev.ddgrcf.sidekick.proto.v1.ListSessionsRequest
 import dev.ddgrcf.sidekick.proto.v1.MediaKind as ProtoMediaKind
 import dev.ddgrcf.sidekick.proto.v1.Message
+import dev.ddgrcf.sidekick.proto.v1.OpenInNvimRequest
+import dev.ddgrcf.sidekick.proto.v1.OpenInNvimResponse
 import dev.ddgrcf.sidekick.proto.v1.Presence
 import dev.ddgrcf.sidekick.proto.v1.PresenceSource
+import dev.ddgrcf.sidekick.proto.v1.RespondRuntimeRequest
+import dev.ddgrcf.sidekick.proto.v1.RuntimeAnswer
+import dev.ddgrcf.sidekick.proto.v1.RuntimeMode
 import dev.ddgrcf.sidekick.proto.v1.Session
+import dev.ddgrcf.sidekick.proto.v1.SessionConfig
+import dev.ddgrcf.sidekick.proto.v1.SetSessionConfigRequest
 import dev.ddgrcf.sidekick.proto.v1.SlashCommand
 import dev.ddgrcf.sidekick.proto.v1.StartSessionRequest
 import dev.ddgrcf.sidekick.proto.v1.StopSessionRequest
@@ -38,10 +49,12 @@ import dev.ddgrcf.sidekick.proto.v1.ToolInfo
 import dev.ddgrcf.sidekick.proto.v1.UnsubscribeRequest
 import dev.ddgrcf.sidekick.proto.v1.UploadMediaRequest
 import dev.ddgrcf.sidekick.proto.v1.Workspace
+import dev.ddgrcf.sidekick.proto.v1.WorkspaceContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -93,6 +106,24 @@ class SessionRepository @Inject constructor(
     private val db: SidekickDatabase,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
+    private val rpcSessionKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    fun isRpcSession(bridgeId: String, sid: String): Boolean = rpcSessionKeys.contains("$bridgeId:$sid")
+
+    fun markRpcSession(bridgeId: String, sid: String) {
+        if (bridgeId.isNotBlank() && sid.isNotBlank()) {
+            rpcSessionKeys.add("$bridgeId:$sid")
+        }
+    }
+
+    private fun recordBackend(bridgeId: String, s: Session) {
+        val k = "$bridgeId:${s.id}"
+        if (s.backend == Backend.BACKEND_RPC) {
+            rpcSessionKeys.add(k)
+        } else if (s.backend != Backend.BACKEND_UNSPECIFIED) {
+            rpcSessionKeys.remove(k)
+        }
+    }
 
     val connectionState: StateFlow<ConnectionState> = socketManager.connectionState
     val events: SharedFlow<PeerFrameEvent> = socketManager.events
@@ -122,6 +153,7 @@ class SessionRepository @Inject constructor(
             Frame(id = id, list_sessions = ListSessionsRequest())
         }
         val list = resp.sessions?.sessions ?: emptyList()
+        list.forEach { recordBackend(bridgeId, it) }
         val now = System.currentTimeMillis()
         db.sessionDao().deleteByBridge(bridgeId)
         db.sessionDao().upsertAll(list.map { s -> s.toEntity(bridgeId, now) })
@@ -187,12 +219,122 @@ class SessionRepository @Inject constructor(
         db.messageDao().resetMessages(bridgeId, convId)
     }
 
+    suspend fun migratePendingConvMessages(bridgeId: String, fromConvId: String, toConvId: String) {
+        if (fromConvId.isBlank() || toConvId.isBlank() || fromConvId == toConvId) return
+        val existing = db.messageDao().observeMessages(bridgeId, fromConvId).first()
+        if (existing.isNotEmpty()) {
+            db.messageDao().upsertAll(existing.map { it.copy(convId = toConvId) })
+        }
+        db.messageDao().resetMessages(bridgeId, fromConvId)
+    }
+
     suspend fun markSessionClosed(bridgeId: String, sid: String) {
         db.sessionDao().markClosed(bridgeId, sid)
     }
 
     suspend fun updateSession(bridgeId: String, session: Session) {
+        recordBackend(bridgeId, session)
         db.sessionDao().upsertAll(listOf(session.toEntity(bridgeId, System.currentTimeMillis())))
+    }
+
+    suspend fun getSessionConfig(bridgeId: String, sid: String): SessionConfig? {
+        val resp = socketManager.request(bridgeId) { id ->
+            Frame(id = id, get_session_config = GetSessionConfigRequest(session_id = sid))
+        }
+        return resp.session_config
+    }
+
+    suspend fun setSessionConfig(
+        bridgeId: String,
+        sid: String,
+        model: String = "",
+        thinkingLevel: String = "",
+        runtimeMode: RuntimeMode = RuntimeMode.RUNTIME_MODE_UNSPECIFIED,
+    ): SessionConfig? {
+        val resp = socketManager.request(bridgeId) { id ->
+            Frame(
+                id = id,
+                set_session_config = SetSessionConfigRequest(
+                    session_id = sid,
+                    model = model,
+                    thinking_level = thinkingLevel,
+                    runtime_mode = runtimeMode,
+                ),
+            )
+        }
+        return resp.session_config
+    }
+
+    suspend fun respondRuntimeRequest(
+        bridgeId: String,
+        sid: String,
+        requestId: String,
+        decision: String = "",
+        feedback: String = "",
+        answers: List<RuntimeAnswer> = emptyList(),
+        cancelled: Boolean = false,
+    ) {
+        socketManager.request(bridgeId) { id ->
+            Frame(
+                id = id,
+                respond_runtime_request = RespondRuntimeRequest(
+                    session_id = sid,
+                    request_id = requestId,
+                    decision = decision,
+                    feedback = feedback,
+                    answers = answers,
+                    cancelled = cancelled,
+                ),
+            )
+        }
+    }
+
+    suspend fun interruptTurn(bridgeId: String, sid: String) {
+        socketManager.request(bridgeId) { id ->
+            Frame(id = id, interrupt_turn = InterruptTurnRequest(session_id = sid))
+        }
+    }
+
+    suspend fun getWorkspaceContext(
+        bridgeId: String,
+        sid: String,
+        cwd: String = "",
+        includeDiff: Boolean = false,
+    ): WorkspaceContext? {
+        val resp = socketManager.request(bridgeId) { id ->
+            Frame(
+                id = id,
+                get_workspace_context = GetWorkspaceContextRequest(
+                    session_id = sid,
+                    cwd = cwd,
+                    include_diff = includeDiff,
+                ),
+            )
+        }
+        return resp.workspace_context
+    }
+
+    suspend fun openInNvim(
+        bridgeId: String,
+        sid: String,
+        tool: String,
+        cwd: String,
+        convId: String,
+        stopRemoteRpc: Boolean = true,
+    ): OpenInNvimResponse? {
+        val resp = socketManager.request(bridgeId) { id ->
+            Frame(
+                id = id,
+                open_in_nvim = OpenInNvimRequest(
+                    session_id = sid,
+                    tool = tool,
+                    cwd = cwd,
+                    conversation_id = convId,
+                    stop_remote_rpc = stopRemoteRpc,
+                ),
+            )
+        }
+        return resp.open_in_nvim_resp
     }
 
     suspend fun subscribe(bridgeId: String, sid: String, streams: List<Stream>, afterSeq: Long) {

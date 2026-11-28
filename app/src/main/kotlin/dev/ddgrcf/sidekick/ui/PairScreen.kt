@@ -8,11 +8,25 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import android.annotation.SuppressLint
+import android.util.Size as AndroidSize
+import android.view.MotionEvent
+import com.google.android.gms.tasks.Tasks
+import com.google.mlkit.vision.barcode.BarcodeScanner
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.common.InputImage
+import java.util.concurrent.TimeUnit
+import com.google.zxing.common.GlobalHistogramBinarizer
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -302,8 +316,15 @@ fun PairContent(
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Button(
-                        onClick = { onPairManualCode(userCode, pskText) },
-                        enabled = !busy && userCode.isNotBlank(),
+                        onClick = {
+                            val trimmed = userCode.trim()
+                            if (trimmed.startsWith("{")) {
+                                onPairQrJson(trimmed)
+                            } else {
+                                onPairManualCode(userCode, pskText)
+                            }
+                        },
+                        enabled = !busy && (userCode.trim().startsWith("{") || (userCode.isNotBlank() && pskText.isNotBlank())),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -432,6 +453,7 @@ private fun ScannerOverlay(
     }
 }
 
+@SuppressLint("ClickableViewAccessibility")
 @Composable
 private fun QrScannerView(
     canScan: Boolean,
@@ -451,6 +473,15 @@ private fun QrScannerView(
             )
         }
     }
+    val mlkitScanner = remember {
+        runCatching {
+            BarcodeScanning.getClient(
+                BarcodeScannerOptions.Builder()
+                    .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                    .build(),
+            )
+        }.getOrNull()
+    }
     val currentCanScan by rememberUpdatedState(canScan)
     val currentOnDetected by rememberUpdatedState(onDetected)
     val currentOnCameraError by rememberUpdatedState(onCameraError)
@@ -459,6 +490,7 @@ private fun QrScannerView(
     DisposableEffect(Unit) {
         onDispose {
             executor.shutdown()
+            runCatching { mlkitScanner?.close() }
         }
     }
 
@@ -477,14 +509,23 @@ private fun QrScannerView(
                     val preview = Preview.Builder().build().also {
                         it.surfaceProvider = previewView.surfaceProvider
                     }
+                    val resolutionSelector = ResolutionSelector.Builder()
+                        .setResolutionStrategy(
+                            ResolutionStrategy(
+                                AndroidSize(1280, 960),
+                                ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER,
+                            ),
+                        )
+                        .build()
                     val analysis = ImageAnalysis.Builder()
+                        .setResolutionSelector(resolutionSelector)
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .build()
                     analysis.setAnalyzer(executor) { imageProxy ->
                         try {
                             val now = System.currentTimeMillis()
                             if (currentCanScan && now - lastScanMs > 2000L) {
-                                val decoded = decodeQrFromYuvPlane(imageProxy, zxingReader)
+                                val decoded = decodeQrFromImageProxy(imageProxy, zxingReader, mlkitScanner)
                                 val ts = System.currentTimeMillis()
                                 if (!decoded.isNullOrBlank() && currentCanScan && ts - lastScanMs > 2000L) {
                                     lastScanMs = ts
@@ -498,7 +539,37 @@ private fun QrScannerView(
                         }
                     }
                     provider.unbindAll()
-                    provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+                    val camera = provider.bindToLifecycle(
+                        lifecycleOwner,
+                        CameraSelector.DEFAULT_BACK_CAMERA,
+                        preview,
+                        analysis,
+                    )
+                    previewView.post {
+                        if (previewView.width > 0 && previewView.height > 0) {
+                            val center = previewView.meteringPointFactory.createPoint(
+                                previewView.width / 2f,
+                                previewView.height / 2f,
+                            )
+                            runCatching {
+                                camera.cameraControl.startFocusAndMetering(
+                                    FocusMeteringAction.Builder(center).build(),
+                                )
+                            }
+                        }
+                    }
+                    previewView.setOnTouchListener { v, ev ->
+                        if (ev.action == MotionEvent.ACTION_UP) {
+                            val pt = previewView.meteringPointFactory.createPoint(ev.x, ev.y)
+                            runCatching {
+                                camera.cameraControl.startFocusAndMetering(
+                                    FocusMeteringAction.Builder(pt).build(),
+                                )
+                            }
+                            v.performClick()
+                        }
+                        true
+                    }
                     currentOnCameraError(null)
                 }.onFailure { e ->
                     currentOnCameraError("相机初始化失败: ${e.message ?: "请检查相机权限或设备支持"}")
@@ -509,7 +580,11 @@ private fun QrScannerView(
     )
 }
 
-private fun decodeQrFromYuvPlane(imageProxy: ImageProxy, reader: MultiFormatReader): String? {
+private fun decodeQrFromImageProxy(
+    imageProxy: ImageProxy,
+    reader: MultiFormatReader,
+    mlkitScanner: BarcodeScanner?,
+): String? {
     val plane = imageProxy.planes.firstOrNull() ?: return null
     val w = imageProxy.width
     val h = imageProxy.height
@@ -537,13 +612,41 @@ private fun decodeQrFromYuvPlane(imageProxy: ImageProxy, reader: MultiFormatRead
         }
     }
 
-    val source = PlanarYUVLuminanceSource(yData, w, h, 0, 0, w, h, false)
-    val candidates = arrayOf(source, source.invert())
-    for (src in candidates) {
-        val bitmap = BinaryBitmap(HybridBinarizer(src))
-        val text = runCatching { reader.decodeWithState(bitmap)?.text }.getOrNull()
-        if (!text.isNullOrBlank()) return text
-        reader.reset()
+    val fullSource = PlanarYUVLuminanceSource(yData, w, h, 0, 0, w, h, false)
+    val cropW = (w * 3) / 4
+    val cropH = (h * 3) / 4
+    val cropLeft = (w - cropW) / 2
+    val cropTop = (h - cropH) / 2
+    val cropSource = PlanarYUVLuminanceSource(yData, w, h, cropLeft, cropTop, cropW, cropH, false)
+
+    val sources = arrayOf(
+        fullSource,
+        fullSource.invert(),
+        cropSource,
+        cropSource.invert(),
+    )
+    for (src in sources) {
+        for (bitmap in arrayOf(
+            BinaryBitmap(HybridBinarizer(src)),
+            BinaryBitmap(GlobalHistogramBinarizer(src)),
+        )) {
+            val text = runCatching { reader.decodeWithState(bitmap)?.text }.getOrNull()
+            reader.reset()
+            if (!text.isNullOrBlank()) return text
+        }
+    }
+
+    if (mlkitScanner != null) {
+        val rot = imageProxy.imageInfo.rotationDegrees
+        val nv21 = ByteArray(w * h + (w * h) / 2)
+        System.arraycopy(yData, 0, nv21, 0, w * h)
+        java.util.Arrays.fill(nv21, w * h, nv21.size, 0x80.toByte())
+        val mlText = runCatching {
+            val input = InputImage.fromByteArray(nv21, w, h, rot, InputImage.IMAGE_FORMAT_NV21)
+            val barcodes = Tasks.await(mlkitScanner.process(input), 250, TimeUnit.MILLISECONDS)
+            barcodes.firstOrNull { !it.rawValue.isNullOrBlank() }?.rawValue
+        }.getOrNull()
+        if (!mlText.isNullOrBlank()) return mlText
     }
     return null
 }

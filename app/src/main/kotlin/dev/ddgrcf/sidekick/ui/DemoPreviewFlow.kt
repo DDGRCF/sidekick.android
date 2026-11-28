@@ -14,6 +14,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -27,8 +28,12 @@ import dev.ddgrcf.sidekick.core.store.MessageEntity
 import dev.ddgrcf.sidekick.data.UiPart
 import dev.ddgrcf.sidekick.vm.MediaKind
 import dev.ddgrcf.sidekick.vm.PendingAttachment
+import dev.ddgrcf.sidekick.vm.StreamingMessageState
 import dev.ddgrcf.sidekick.core.relay.QrPairingPayload
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -311,6 +316,9 @@ fun DemoPreviewFlow(
         }
         is DemoPage.Session -> {
             key(cur.sid) {
+            val scope = rememberCoroutineScope()
+            var demoStreamingDraft by remember { mutableStateOf(StreamingMessageState()) }
+            var demoStreamJob by remember { mutableStateOf<Job?>(null) }
             SessionContent(
                 sessionId = cur.sid,
                 title = cur.title,
@@ -318,6 +326,7 @@ fun DemoPreviewFlow(
                 structuredHistory = cur.structured,
                 connectionState = ConnectionState.CONNECTED,
                 messages = messages.toList(),
+                streamingDraft = demoStreamingDraft,
                 decodeParts = DemoSampleData::decode,
                 screenLines = screenLines,
                 screenRevision = screenRevision,
@@ -378,6 +387,46 @@ fun DemoPreviewFlow(
                         if (text.isNotBlank()) {
                             screenRevision++
                             appendedTerminalLines += "\u001B[32m> $text\u001B[0m"
+                            if (cur.structured) {
+                                demoStreamJob?.cancel()
+                                val speakerModel = when (cur.tool) {
+                                    "codex" -> "gpt-5.1-codex"
+                                    "claude" -> "claude-sonnet-4"
+                                    "antigravity" -> "gemini-2.5-pro"
+                                    else -> cur.tool
+                                }
+                                demoStreamingDraft = StreamingMessageState(
+                                    active = true,
+                                    text = "",
+                                    model = speakerModel,
+                                )
+                                demoStreamJob = scope.launch {
+                                    delay(160L)
+                                    val fullReply = "已收到「${text.trim()}」，正在 Chat 视图实时流式输出分析结果，并在结构化 Turn 落盘后自动衔接完整记录。"
+                                    val chunkSize = 5
+                                    var pos = 0
+                                    while (pos < fullReply.length) {
+                                        pos = (pos + chunkSize).coerceAtMost(fullReply.length)
+                                        demoStreamingDraft = demoStreamingDraft.copy(
+                                            active = true,
+                                            text = fullReply.substring(0, pos),
+                                        )
+                                        delay(28L)
+                                    }
+                                    delay(100L)
+                                    val replySeq = (messages.lastOrNull()?.seq ?: 0L) + 1L
+                                    messages += MessageEntity(
+                                        bridgeId = DemoSampleData.bridges.first().id,
+                                        convId = "conv-codex-1",
+                                        seq = replySeq,
+                                        role = "ROLE_ASSISTANT",
+                                        partsJson = json.encodeToString(listOf<UiPart>(UiPart.Text(fullReply))),
+                                        createdMs = System.currentTimeMillis(),
+                                        model = speakerModel,
+                                    )
+                                    demoStreamingDraft = StreamingMessageState()
+                                }
+                            }
                         }
                         if (atts.isNotEmpty()) {
                             val tier = if (atts.any { it.usesBlobTier }) "加密 Blob (>2MiB)" else "Noise 直传 (≤2MiB)"

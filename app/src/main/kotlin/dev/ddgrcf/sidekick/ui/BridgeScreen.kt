@@ -83,6 +83,9 @@ fun BridgeScreen(
     val tools by vm.tools.collectAsStateWithLifecycle()
     val workspaces by vm.workspaces.collectAsStateWithLifecycle()
     val loading by vm.loading.collectAsStateWithLifecycle()
+    val syncingHistory by vm.syncingHistory.collectAsStateWithLifecycle()
+    val pullRefreshing by vm.pullRefreshing.collectAsStateWithLifecycle()
+    val startingSession by vm.startingSession.collectAsStateWithLifecycle()
     val error by vm.error.collectAsStateWithLifecycle()
 
     BridgeContent(
@@ -92,9 +95,12 @@ fun BridgeScreen(
         tools = tools,
         workspaces = workspaces,
         loading = loading,
+        syncingHistory = syncingHistory,
+        pullRefreshing = pullRefreshing,
+        startingSession = startingSession,
         error = error,
         onBack = onBack,
-        onRefresh = vm::refresh,
+        onRefresh = { vm.refresh(userInitiated = true) },
         onClickSession = { s ->
             onOpenSession(s.sid, s.tool, s.title ?: s.sid, s.convId ?: "", vm.isStructured(s.tool))
         },
@@ -125,6 +131,9 @@ fun BridgeContent(
     workspaces: List<Workspace>,
     error: String?,
     loading: Boolean = false,
+    syncingHistory: Boolean = false,
+    pullRefreshing: Boolean = false,
+    startingSession: Boolean = false,
     isDemo: Boolean = false,
     onBack: () -> Unit,
     onRefresh: () -> Unit,
@@ -187,14 +196,51 @@ fun BridgeContent(
                 containerColor = MaterialTheme.colorScheme.background,
                 divider = { HairlineDivider() },
             ) {
-                Tab(selected = tabIdx == 0, onClick = { tabIdx = 0 }, text = { Text("会话 (${sessions.size})") })
-                Tab(selected = tabIdx == 1, onClick = { tabIdx = 1 }, text = { Text("全部历史 (${history.size})") })
+                Tab(
+                    selected = tabIdx == 0,
+                    onClick = { tabIdx = 0 },
+                    text = { Text("会话 (${sessions.size})") },
+                )
+                Tab(
+                    selected = tabIdx == 1,
+                    onClick = { tabIdx = 1 },
+                    text = {
+                        Text(
+                            if (syncingHistory && history.isEmpty()) "全部历史 (同步中…)" else "全部历史 (${history.size})",
+                        )
+                    },
+                )
             }
-            if (loading) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            val showTopProgress = !pullRefreshing && (loading || syncingHistory || startingSession)
+            if (showTopProgress) {
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp),
+                )
+            }
+            if (startingSession) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            text = "正在工作站启动会话，稍候将自动进入…",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
             }
             PullToRefreshBox(
-                isRefreshing = loading,
+                isRefreshing = pullRefreshing,
                 onRefresh = onRefresh,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
             ) {
@@ -216,10 +262,14 @@ fun BridgeContent(
                                     Box(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(vertical = 64.dp),
+                                            .padding(horizontal = 24.dp, vertical = 48.dp),
                                         contentAlignment = Alignment.Center,
                                     ) {
-                                        CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 2.5.dp)
+                                        Text(
+                                            text = "正在同步运行中的会话…",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
                                     }
                                 }
                             }
@@ -265,15 +315,19 @@ fun BridgeContent(
                             }
                         }
                         when {
-                            loading && history.isEmpty() -> {
+                            (loading || syncingHistory) && history.isEmpty() -> {
                                 item {
                                     Box(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(vertical = 64.dp),
+                                            .padding(horizontal = 24.dp, vertical = 48.dp),
                                         contentAlignment = Alignment.Center,
                                     ) {
-                                        CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 2.5.dp)
+                                        Text(
+                                            text = "正在后台索引工作站历史记录…",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
                                     }
                                 }
                             }

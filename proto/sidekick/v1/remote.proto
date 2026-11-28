@@ -55,6 +55,15 @@ message Frame {
     UploadMediaResponse upload_media_resp = 58;
     HandoverSessionRequest handover_session = 59;
     HandoverSessionResponse handover_session_resp = 60;
+    GetSessionConfigRequest get_session_config = 61;
+    SessionConfig session_config = 62;
+    SetSessionConfigRequest set_session_config = 63;
+    RespondRuntimeRequest respond_runtime_request = 64;
+    InterruptTurnRequest interrupt_turn = 65;
+    GetWorkspaceContextRequest get_workspace_context = 66;
+    WorkspaceContext workspace_context = 67;
+    OpenInNvimRequest open_in_nvim = 68;
+    OpenInNvimResponse open_in_nvim_resp = 69;
   }
 }
 
@@ -104,6 +113,7 @@ enum Backend {
   BACKEND_UNSPECIFIED = 0;
   BACKEND_TMUX = 1;
   BACKEND_ZELLIJ = 2;
+  BACKEND_RPC = 3;
 }
 
 // Provider-native conversation identity. Provider-private metadata
@@ -355,6 +365,41 @@ message SessionClosed {
   string reason = 1;
 }
 
+message StreamingDraft {
+  // True while the agent is actively streaming output before the final structured turn commits.
+  bool active = 1;
+  // Clean incremental response text/Markdown extracted for live Chat display.
+  string text = 2;
+  // Optional model/tool identifier for the active speaker.
+  string model = 3;
+  // Live incremental reasoning/thinking text while the model is thinking.
+  string thinking = 4;
+  // Short human-readable activity label (e.g. "思考中…", "正在运行工具 bash…").
+  string status = 5;
+}
+
+message InteractiveDialogOption {
+  string label = 1;
+  string description = 2;
+  bool selected = 3;
+  bool current = 4;
+}
+
+// InteractiveDialog describes a secondary TUI popup/selector (e.g. /model, /thinking,
+// permission confirmation, or interactive picker) rendered natively in Chat.
+message InteractiveDialog {
+  bool open = 1;
+  // "model", "thinking", "select", "confirm", "permission", "input", "menu"
+  string kind = 2;
+  string title = 3;
+  string subtitle = 4;
+  string query = 5;
+  repeated InteractiveDialogOption options = 6;
+  int32 selected_index = 7;
+  string hint = 8;
+  bool searchable = 9;
+}
+
 message SessionEvent {
   string session_id = 1;
   oneof kind {
@@ -365,6 +410,14 @@ message SessionEvent {
     SessionClosed closed = 13;
     // Same semantics as GetMessagesResponse.reset.
     bool reset = 14;
+    // Live incremental assistant draft before the final structured Message commits.
+    StreamingDraft draft = 15;
+    // Live secondary interactive dialog (/model, /thinking, permission prompt, etc.).
+    InteractiveDialog dialog = 16;
+    // Updated native RPC session config (model, thinking level, runtime mode, running state).
+    SessionConfig config_updated = 17;
+    // Blocking interactive request (tool approval or structured user input) from native RPC runtime.
+    RuntimeRequest runtime_request = 18;
   }
 }
 
@@ -470,4 +523,149 @@ message ListCommandsRequest {
 
 message ListCommandsResponse {
   repeated SlashCommand commands = 1;
+}
+
+message ModelOption {
+  string id = 1;
+  string provider = 2;
+  string name = 3;
+  bool reasoning = 4;
+  repeated string thinking_levels = 5;
+  bool current = 6;
+}
+
+enum RuntimeMode {
+  RUNTIME_MODE_UNSPECIFIED = 0;
+  RUNTIME_MODE_APPROVAL_REQUIRED = 1;
+  RUNTIME_MODE_AUTO_ACCEPT_EDITS = 2;
+  RUNTIME_MODE_AUTO = 3;
+  RUNTIME_MODE_FULL_ACCESS = 4;
+}
+
+message SessionConfig {
+  string session_id = 1;
+  string model = 2;
+  string thinking_level = 3;
+  RuntimeMode runtime_mode = 4;
+  repeated ModelOption available_models = 5;
+  repeated string available_thinking_levels = 6;
+  repeated RuntimeMode supported_runtime_modes = 7;
+  bool supports_mid_turn_config = 8;
+  bool supports_steer = 9;
+  bool supports_interrupt = 10;
+  bool is_running = 11;
+}
+
+message GetSessionConfigRequest {
+  string session_id = 1;
+}
+
+message SetSessionConfigRequest {
+  string session_id = 1;
+  string model = 2;
+  string thinking_level = 3;
+  RuntimeMode runtime_mode = 4;
+}
+
+enum RuntimeRequestKind {
+  RUNTIME_REQUEST_KIND_UNSPECIFIED = 0;
+  RUNTIME_REQUEST_KIND_APPROVAL = 1;
+  RUNTIME_REQUEST_KIND_USER_INPUT = 2;
+}
+
+message RuntimeRequestOption {
+  string id = 1;
+  string label = 2;
+  string description = 3;
+  string preview = 4;
+}
+
+message RuntimeQuestion {
+  string id = 1;
+  string header = 2;
+  string question = 3;
+  repeated RuntimeRequestOption options = 4;
+  bool multi_select = 5;
+  bool allow_custom_answer = 6;
+}
+
+message RuntimeRequest {
+  string request_id = 1;
+  RuntimeRequestKind kind = 2;
+  bool resolved = 3;
+  string title = 4;
+  string detail = 5;
+  string tool_name = 6;
+  repeated RuntimeRequestOption approval_options = 7;
+  repeated RuntimeQuestion questions = 8;
+  bool dismissible = 9;
+}
+
+message RuntimeAnswer {
+  string question_id = 1;
+  repeated string selected_values = 2;
+  string custom_text = 3;
+}
+
+message RespondRuntimeRequest {
+  string session_id = 1;
+  string request_id = 2;
+  string decision = 3;
+  string feedback = 4;
+  repeated RuntimeAnswer answers = 5;
+  bool cancelled = 6;
+}
+
+message InterruptTurnRequest {
+  string session_id = 1;
+}
+
+message ChangedFile {
+  string path = 1;
+  string status = 2; // "M", "A", "D", "R", "??"
+  int32 added = 3;
+  int32 removed = 4;
+}
+
+message DiagnosticItem {
+  string file = 1;
+  uint32 line = 2;
+  uint32 col = 3;
+  string severity = 4; // "error", "warn", "info", "hint"
+  string message = 5;
+  string source = 6;
+}
+
+message GetWorkspaceContextRequest {
+  string session_id = 1;
+  string cwd = 2;
+  bool include_diff = 3;
+}
+
+message WorkspaceContext {
+  string cwd = 1;
+  string git_branch = 2;
+  repeated ChangedFile changed_files = 3;
+  string git_diff = 4;
+  bool nvim_connected = 5;
+  string nvim_server = 6;
+  string nvim_file = 7;
+  uint32 nvim_line = 8;
+  repeated DiagnosticItem diagnostics = 9;
+  repeated string open_buffers = 10;
+}
+
+message OpenInNvimRequest {
+  string session_id = 1;
+  string tool = 2;
+  string cwd = 3;
+  string conversation_id = 4;
+  bool stop_remote_rpc = 5;
+}
+
+message OpenInNvimResponse {
+  bool opened = 1;
+  string nvim_server = 2;
+  string resume_command = 3;
+  string message = 4;
 }

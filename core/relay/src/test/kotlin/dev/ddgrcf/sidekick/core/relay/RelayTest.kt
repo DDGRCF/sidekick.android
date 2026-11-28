@@ -89,4 +89,17 @@ class RelayApiAndTokenTest {
         val tokens = api.verifyTotp(baseUrl, "t1", "123456")
         assertEquals("a1", tokens.access_token)
     }
+
+    @Test
+    fun devLoginParsesTokenPair() = runTest {
+        val baseUrl = server.url("").toString().trimEnd('/')
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody("""{"access_token":"dev-tok","refresh_token":"dev-rt","expires_at_ms":9999999,"user_id":"dev-u1","device_id":""}"""),
+        )
+        val tokens = api.devLogin(baseUrl)
+        assertEquals("dev-tok", tokens.access_token)
+        assertEquals("dev-u1", tokens.user_id)
+    }
 }

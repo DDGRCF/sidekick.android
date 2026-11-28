@@ -13,6 +13,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -28,6 +29,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -74,6 +76,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.automirrored.rounded.WrapText
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AlternateEmail
@@ -92,12 +95,15 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.FormatQuote
+import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Keyboard
+import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Psychology
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.StopCircle
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.Sync
@@ -114,6 +120,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -210,10 +217,19 @@ import dev.ddgrcf.sidekick.proto.v1.Key
 import dev.ddgrcf.sidekick.proto.v1.ToolInfo
 import dev.ddgrcf.sidekick.ui.theme.SidekickThemeExtras
 import dev.ddgrcf.sidekick.vm.MediaKind
+import dev.ddgrcf.sidekick.vm.InteractiveDialogState
+import dev.ddgrcf.sidekick.vm.OptimisticUserMessage
+import dev.ddgrcf.sidekick.vm.ModelOptionUi
 import dev.ddgrcf.sidekick.vm.PendingAttachment
 import dev.ddgrcf.sidekick.vm.QuotedMessage
+import dev.ddgrcf.sidekick.vm.RuntimeAnswerInput
+import dev.ddgrcf.sidekick.vm.RuntimeModeUi
+import dev.ddgrcf.sidekick.vm.RuntimeRequestKindUi
+import dev.ddgrcf.sidekick.vm.RuntimeRequestUi
+import dev.ddgrcf.sidekick.vm.SessionConfigUi
 import dev.ddgrcf.sidekick.vm.SessionViewModel
 import dev.ddgrcf.sidekick.vm.SlashCommandSuggestion
+import dev.ddgrcf.sidekick.vm.StreamingMessageState
 import dev.ddgrcf.sidekick.vm.WorkspaceFileSuggestion
 import dev.ddgrcf.sidekick.vm.coreBuiltinSlashCommands
 import kotlinx.coroutines.Dispatchers
@@ -255,15 +271,38 @@ fun SessionScreen(
     val availableTools by vm.availableTools.collectAsStateWithLifecycle()
     val otherSessions by vm.otherSessions.collectAsStateWithLifecycle()
     val handoverBusy by vm.handoverBusy.collectAsStateWithLifecycle()
+    val syncingHistory by vm.syncingHistory.collectAsStateWithLifecycle()
+    val streamingDraft by vm.streamingDraft.collectAsStateWithLifecycle()
+    val interactiveDialog by vm.interactiveDialog.collectAsStateWithLifecycle()
+    val sessionConfig by vm.sessionConfig.collectAsStateWithLifecycle()
+    val pendingRuntimeRequests by vm.pendingRuntimeRequests.collectAsStateWithLifecycle()
+    val isRpcSession by vm.isRpcSession.collectAsStateWithLifecycle()
+    val optimisticUserMessages by vm.optimisticUserMessages.collectAsStateWithLifecycle()
+    val workspaceContext by vm.workspaceContext.collectAsStateWithLifecycle()
+    val workspaceContextLoading by vm.workspaceContextLoading.collectAsStateWithLifecycle()
+    val turnStartedMs by vm.turnStartedMs.collectAsStateWithLifecycle()
+    val lastResumeCommand by vm.lastResumeCommand.collectAsStateWithLifecycle()
     val toast by vm.toast.collectAsStateWithLifecycle()
 
     SessionContent(
         sessionId = sid,
         title = title,
         tool = tool,
+        convId = convId,
         structuredHistory = structuredHistory,
+        isRpcSession = isRpcSession,
         connectionState = connState,
         messages = messages,
+        syncingHistory = syncingHistory,
+        streamingDraft = streamingDraft,
+        interactiveDialog = interactiveDialog,
+        sessionConfig = sessionConfig,
+        pendingRuntimeRequests = pendingRuntimeRequests,
+        optimisticUserMessages = optimisticUserMessages,
+        workspaceContext = workspaceContext,
+        workspaceContextLoading = workspaceContextLoading,
+        turnStartedMs = turnStartedMs,
+        lastResumeCommand = lastResumeCommand,
         decodeParts = vm::decodeParts,
         screenLines = screenLines,
         screenRevision = screenRev,
@@ -281,6 +320,25 @@ fun SessionScreen(
         onBack = onBack,
         onSendInput = vm::sendWithAttachments,
         onSendKey = vm::sendKey,
+        onSendKeys = vm::sendKeys,
+        onSelectDialogOption = vm::selectDialogOption,
+        onDialogSearch = vm::updateDialogSearch,
+        onDismissDialog = vm::dismissDialog,
+        onSelectModel = vm::updateModel,
+        onSelectThinkingLevel = vm::updateThinkingLevel,
+        onSelectRuntimeMode = vm::updateRuntimeMode,
+        onRespondApproval = vm::respondApproval,
+        onRespondUserInput = vm::respondUserInput,
+        onInterruptTurn = vm::interruptTurn,
+        onRefreshWorkspaceContext = vm::refreshWorkspaceContext,
+        onFormatContextInjection = vm::formatContextInjection,
+        onOpenInNvim = { vm.openInNvim(stopRemoteRpc = true) },
+        onDismissResumeCommand = vm::clearResumeCommand,
+        onTakeOverAsRpc = if (!isRpcSession && convId.isNotBlank()) {
+            { vm.takeOverAsRpc(onOpenSession) }
+        } else {
+            null
+        },
         onFocusChanged = vm::onFocusChanged,
         onSearchFiles = vm::searchWorkspaceFiles,
         onAddAttachment = vm::addAttachment,
@@ -313,7 +371,20 @@ fun SessionContent(
     onSendKey: (Key) -> Unit,
     onFocusChanged: (Boolean) -> Unit,
     sessionId: String = "",
+    convId: String = "",
+    live: Boolean = true,
+    isRpcSession: Boolean = false,
     isDemo: Boolean = false,
+    syncingHistory: Boolean = false,
+    streamingDraft: StreamingMessageState = StreamingMessageState(),
+    interactiveDialog: InteractiveDialogState? = null,
+    sessionConfig: SessionConfigUi? = null,
+    pendingRuntimeRequests: List<RuntimeRequestUi> = emptyList(),
+    optimisticUserMessages: List<OptimisticUserMessage> = emptyList(),
+    workspaceContext: dev.ddgrcf.sidekick.vm.WorkspaceContextUi? = null,
+    workspaceContextLoading: Boolean = false,
+    turnStartedMs: Long? = null,
+    lastResumeCommand: String? = null,
     pendingAttachments: List<PendingAttachment> = emptyList(),
     fetchedMediaPaths: Map<String, String> = emptyMap(),
     loadingMediaIds: Set<String> = emptySet(),
@@ -322,6 +393,46 @@ fun SessionContent(
     availableTools: List<ToolInfo> = emptyList(),
     otherSessions: List<SessionEntity> = emptyList(),
     handoverBusy: Boolean = false,
+    onSendKeys: (List<Key>) -> Unit = { keys -> keys.forEach(onSendKey) },
+    onSelectDialogOption: (Int) -> Unit = { idx ->
+        val cur = interactiveDialog?.selectedIndex ?: 0
+        val delta = idx - cur
+        val seq = buildList {
+            when {
+                delta > 0 -> repeat(delta) { add(Key.KEY_DOWN) }
+                delta < 0 -> repeat(-delta) { add(Key.KEY_UP) }
+            }
+            add(Key.KEY_ENTER)
+        }
+        onSendKeys(seq)
+    },
+    onDialogSearch: (String) -> Unit = {},
+    onDismissDialog: () -> Unit = { onSendKey(Key.KEY_ESCAPE) },
+    onSelectModel: (String) -> Unit = {},
+    onSelectThinkingLevel: (String) -> Unit = {},
+    onSelectRuntimeMode: (RuntimeModeUi) -> Unit = {},
+    onRespondApproval: (requestId: String, decision: String, feedback: String) -> Unit = { _, _, _ -> },
+    onRespondUserInput: (requestId: String, answers: List<RuntimeAnswerInput>, cancelled: Boolean) -> Unit = { _, _, _ -> },
+    onInterruptTurn: () -> Unit = { onSendKey(Key.KEY_CTRL_C) },
+    onRefreshWorkspaceContext: (Boolean) -> Unit = {},
+    onFormatContextInjection: (String) -> String = { kind ->
+        val wc = workspaceContext
+        when (kind) {
+            "file" -> if (wc != null && wc.nvimFile.isNotBlank()) {
+                if (wc.nvimLine > 0) "@${wc.nvimFile}:${wc.nvimLine} " else "@${wc.nvimFile} "
+            } else ""
+            "diagnostics" -> if (wc != null && wc.diagnostics.isNotEmpty()) {
+                wc.diagnostics.take(8).joinToString("\n") { "- ${it.file}:${it.line}: ${it.message}" } + "\n"
+            } else ""
+            "git_diff" -> if (wc != null && wc.changedFiles.isNotEmpty()) {
+                wc.changedFiles.take(12).joinToString("\n") { "- [${it.status}] ${it.path}" } + "\n"
+            } else ""
+            else -> ""
+        }
+    },
+    onOpenInNvim: (() -> Unit)? = null,
+    onDismissResumeCommand: () -> Unit = {},
+    onTakeOverAsRpc: (() -> Unit)? = null,
     onSearchFiles: (String) -> Unit = {},
     onAddAttachment: (PendingAttachment) -> Unit = {},
     onRemoveAttachment: (String) -> Unit = {},
@@ -339,6 +450,10 @@ fun SessionContent(
     var showOverflow by remember { mutableStateOf(false) }
     var confirmStop by rememberSaveable { mutableStateOf(false) }
     var showHandoverSheet by rememberSaveable { mutableStateOf(false) }
+    var showSettingsSheet by rememberSaveable { mutableStateOf(false) }
+    var showDiffSheet by rememberSaveable { mutableStateOf(false) }
+    var showNvimSheet by rememberSaveable { mutableStateOf(false) }
+    var pendingInsertSnippet by remember { mutableStateOf<Pair<Int, String>?>(null) }
     val stateJson = remember { Json { ignoreUnknownKeys = true } }
     var lightboxMedia by rememberSaveable(
         stateSaver = Saver<UiPart.Media?, String>(
@@ -375,7 +490,7 @@ fun SessionContent(
         }
     }
 
-    val isTerminalTab = !structuredHistory || tabIdx == 1
+    val isTerminalTab = (!structuredHistory || tabIdx == 1) && !isRpcSession
     val imeVisible = WindowInsets.isImeVisible
     val connectionAttention = connectionState != ConnectionState.CONNECTED
     val showExpandedHeader = headerExpanded || headerPinned || connectionAttention
@@ -477,6 +592,7 @@ fun SessionContent(
                 tool = tool,
                 sessionId = sessionId,
                 structuredHistory = structuredHistory,
+                showTerminalTabs = structuredHistory && !isRpcSession,
                 tabIdx = tabIdx,
                 expanded = showExpandedHeader,
                 showOverflow = showOverflow,
@@ -498,7 +614,18 @@ fun SessionContent(
                 onOpenOverflow = { showOverflow = true },
                 onDismissOverflow = { showOverflow = false },
                 onRefreshMessages = onRefreshMessages,
+                onOpenModelPicker = when {
+                    sessionConfig != null -> {
+                        { showSettingsSheet = true }
+                    }
+                    live && structuredHistory -> {
+                        { onSendInput("/model", true) }
+                    }
+                    else -> null
+                },
                 onOpenHandover = { showHandoverSheet = true },
+                onOpenInNvim = onOpenInNvim,
+                onTakeOverAsRpc = onTakeOverAsRpc,
                 onCopySessionId = {
                     clipboard.setText(AnnotatedString(sessionId))
                     notify("已复制会话 ID")
@@ -516,18 +643,37 @@ fun SessionContent(
                 tool = tool,
                 localTyping = localTyping,
                 defaultShowKeycaps = isTerminalTab,
+                showKeycapToggle = !isRpcSession,
+                isRunning = streamingDraft.active || (sessionConfig?.isRunning == true),
+                sessionConfig = sessionConfig,
+                pendingRuntimeRequests = pendingRuntimeRequests,
+                workspaceContext = workspaceContext,
+                turnStartedMs = turnStartedMs,
+                pendingInsertSnippet = pendingInsertSnippet,
                 dismissSignal = dismissSignal,
                 pendingAttachments = pendingAttachments,
                 quotedMessage = quotedMessage,
                 fileSuggestions = fileSuggestions,
                 slashCommands = slashCommands,
                 screenLines = screenLines,
+                onOpenDiffSheet = {
+                    showDiffSheet = true
+                    onRefreshWorkspaceContext(true)
+                },
+                onOpenNvimSheet = {
+                    showNvimSheet = true
+                    onRefreshWorkspaceContext(false)
+                },
                 onSearchFiles = onSearchFiles,
                 onClearQuote = { quotedMessage = null },
                 onAddAttachment = onAddAttachment,
                 onRemoveAttachment = onRemoveAttachment,
                 onSendInput = onSendInput,
                 onSendKey = onSendKey,
+                onInterruptTurn = onInterruptTurn,
+                onOpenSettingsSheet = { showSettingsSheet = true },
+                onRespondApproval = onRespondApproval,
+                onRespondUserInput = onRespondUserInput,
                 onFocusChanged = onFocusChanged,
             )
         },
@@ -571,7 +717,11 @@ fun SessionContent(
                 if (structuredHistory && tabIdx == 0) {
                     ChatView(
                         tool = tool,
+                        isRpcSession = isRpcSession,
                         messages = messages,
+                        syncingHistory = syncingHistory,
+                        optimisticUserMessages = optimisticUserMessages,
+                        streamingDraft = streamingDraft,
                         decodeParts = decodeParts,
                         fetchedMediaPaths = fetchedMediaPaths,
                         onCopyText = { txt, label ->
@@ -589,6 +739,18 @@ fun SessionContent(
                         onOpenVideo = { media ->
                             onRequestMedia(media)
                             videoPlayerMedia = media
+                        },
+                        onSelectQuestionOption = if (live) {
+                            { optionIndex, optionLabel, isSingleSelect ->
+                                if (isSingleSelect) {
+                                    val seq = List(optionIndex) { Key.KEY_DOWN } + Key.KEY_ENTER
+                                    onSendKeys(seq)
+                                } else {
+                                    onSendInput(optionLabel, true)
+                                }
+                            }
+                        } else {
+                            null
                         },
                         onSwitchToTerminal = { selectTab(1) },
                         modifier = Modifier.fillMaxSize(),
@@ -614,6 +776,20 @@ fun SessionContent(
                     terminalLineCount = screenLines.size,
                     modifier = Modifier.align(Alignment.TopCenter),
                 )
+
+                val activeDialog = interactiveDialog
+                if (!isTerminalTab && !isRpcSession && activeDialog != null && activeDialog.open) {
+                    InteractiveDialogOverlay(
+                        dialog = activeDialog,
+                        onSelectOption = onSelectDialogOption,
+                        onSearchChanged = onDialogSearch,
+                        onDismiss = onDismissDialog,
+                        onSwitchToTerminal = { selectTab(1) },
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                    )
+                }
             }
         }
     }
@@ -635,6 +811,52 @@ fun SessionContent(
             },
             dismissButton = {
                 TextButton(onClick = { confirmStop = false }) { Text("取消") }
+            },
+        )
+    }
+
+    if (!lastResumeCommand.isNullOrBlank()) {
+        AlertDialog(
+            onDismissRequest = onDismissResumeCommand,
+            title = { Text("在本地终端接续会话") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "未直接拉起 Neovim 面板，可复制以下命令在本地终端继续当前对话：",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+                    ) {
+                        SelectionContainer {
+                            Text(
+                                text = lastResumeCommand,
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(10.dp),
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        clipboard.setText(AnnotatedString(lastResumeCommand))
+                        notify("已复制恢复命令")
+                        onDismissResumeCommand()
+                    },
+                ) {
+                    Text("复制命令")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = onDismissResumeCommand) { Text("关闭") }
             },
         )
     }
@@ -672,6 +894,46 @@ fun SessionContent(
             },
         )
     }
+
+    val activeConfig = sessionConfig
+    if (showSettingsSheet && activeConfig != null) {
+        SessionSettingsBottomSheet(
+            config = activeConfig,
+            onSelectModel = onSelectModel,
+            onSelectThinking = onSelectThinkingLevel,
+            onSelectRuntimeMode = onSelectRuntimeMode,
+            onDismiss = { showSettingsSheet = false },
+        )
+    }
+
+    val wc = workspaceContext
+    if (showDiffSheet && wc != null) {
+        WorkspaceDiffSheet(
+            workspaceContext = wc,
+            loading = workspaceContextLoading,
+            onRefresh = { onRefreshWorkspaceContext(true) },
+            onAttachSummary = {
+                val snippet = onFormatContextInjection("git_diff")
+                if (snippet.isNotBlank()) {
+                    pendingInsertSnippet = ((pendingInsertSnippet?.first ?: 0) + 1) to snippet
+                }
+            },
+            onDismiss = { showDiffSheet = false },
+        )
+    }
+    if (showNvimSheet && wc != null) {
+        NvimContextSheet(
+            workspaceContext = wc,
+            onRefresh = { onRefreshWorkspaceContext(false) },
+            onInsertSnippet = { kind ->
+                val snippet = onFormatContextInjection(kind)
+                if (snippet.isNotBlank()) {
+                    pendingInsertSnippet = ((pendingInsertSnippet?.first ?: 0) + 1) to snippet
+                }
+            },
+            onDismiss = { showNvimSheet = false },
+        )
+    }
 }
 
 @Composable
@@ -679,6 +941,7 @@ private fun SessionAdaptiveHeader(
     tool: String,
     sessionId: String,
     structuredHistory: Boolean,
+    showTerminalTabs: Boolean = structuredHistory,
     tabIdx: Int,
     expanded: Boolean,
     showOverflow: Boolean,
@@ -692,7 +955,10 @@ private fun SessionAdaptiveHeader(
     onOpenOverflow: () -> Unit,
     onDismissOverflow: () -> Unit,
     onRefreshMessages: () -> Unit,
+    onOpenModelPicker: (() -> Unit)? = null,
     onOpenHandover: () -> Unit = {},
+    onOpenInNvim: (() -> Unit)? = null,
+    onTakeOverAsRpc: (() -> Unit)? = null,
     onCopySessionId: () -> Unit,
     onTerminalFontDelta: (Int) -> Unit,
     onToggleTerminalWrap: () -> Unit,
@@ -743,7 +1009,7 @@ private fun SessionAdaptiveHeader(
                     )
                 }
 
-                if (structuredHistory && !largeFontMode) {
+                if (showTerminalTabs && !largeFontMode) {
                     SessionViewTabs(
                         selectedIndex = tabIdx,
                         onSelectTab = onSelectTab,
@@ -758,6 +1024,26 @@ private fun SessionAdaptiveHeader(
                         expanded = showOverflow,
                         onDismissRequest = onDismissOverflow,
                     ) {
+                        if (onOpenInNvim != null) {
+                            DropdownMenuItem(
+                                text = { Text("在 Neovim 打开") },
+                                leadingIcon = { Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null) },
+                                onClick = {
+                                    onDismissOverflow()
+                                    onOpenInNvim()
+                                },
+                            )
+                        }
+                        if (onTakeOverAsRpc != null) {
+                            DropdownMenuItem(
+                                text = { Text("切换原生流式接管") },
+                                leadingIcon = { Icon(Icons.Rounded.Sync, contentDescription = null) },
+                                onClick = {
+                                    onDismissOverflow()
+                                    onTakeOverAsRpc()
+                                },
+                            )
+                        }
                         if (canHandover) {
                             DropdownMenuItem(
                                 text = { Text("移交给其他 Agent") },
@@ -765,6 +1051,16 @@ private fun SessionAdaptiveHeader(
                                 onClick = {
                                     onDismissOverflow()
                                     onOpenHandover()
+                                },
+                            )
+                        }
+                        if (onOpenModelPicker != null) {
+                            DropdownMenuItem(
+                                text = { Text("切换模型 (/model)") },
+                                leadingIcon = { Icon(Icons.Rounded.Psychology, contentDescription = null) },
+                                onClick = {
+                                    onDismissOverflow()
+                                    onOpenModelPicker()
                                 },
                             )
                         }
@@ -845,7 +1141,7 @@ private fun SessionAdaptiveHeader(
                 }
             }
 
-            if (structuredHistory && largeFontMode) {
+            if (showTerminalTabs && largeFontMode) {
                 SessionViewTabs(
                     selectedIndex = tabIdx,
                     onSelectTab = onSelectTab,
@@ -1039,10 +1335,27 @@ private fun ScrollToBottomButton(
     }
 }
 
+private suspend fun scrollToListEnd(listState: LazyListState, lastIndex: Int) {
+    if (lastIndex < 0) return
+    listState.scrollToItem(lastIndex)
+    val updated = listState.layoutInfo
+    val lastInfo = updated.visibleItemsInfo.lastOrNull()
+    if (lastInfo != null && lastInfo.index == lastIndex) {
+        val gap = (lastInfo.offset + lastInfo.size) - updated.viewportEndOffset
+        if (gap > 0) {
+            listState.scrollBy(gap.toFloat())
+        }
+    }
+}
+
 @Composable
 private fun ChatView(
     tool: String,
+    isRpcSession: Boolean = false,
     messages: List<MessageEntity>,
+    syncingHistory: Boolean,
+    optimisticUserMessages: List<OptimisticUserMessage>,
+    streamingDraft: StreamingMessageState,
     decodeParts: (String) -> List<UiPart>,
     fetchedMediaPaths: Map<String, String>,
     onCopyText: (String, String) -> Unit,
@@ -1050,38 +1363,55 @@ private fun ChatView(
     onAutoFetchMedia: (UiPart.Media) -> Unit,
     onOpenImage: (UiPart.Media) -> Unit,
     onOpenVideo: (UiPart.Media) -> Unit,
+    onSelectQuestionOption: ((optionIndex: Int, optionLabel: String, isSingleSelect: Boolean) -> Unit)? = null,
     onSwitchToTerminal: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    if (messages.isEmpty()) {
-        Box(
-            modifier = modifier
-                .fillMaxSize()
-                .padding(32.dp),
-            contentAlignment = Alignment.Center,
-        ) {
+    val turns = remember(messages, decodeParts) {
+        groupMessagesIntoChatTurns(messages, decodeParts)
+    }
+
+    if (turns.isEmpty() && optimisticUserMessages.isEmpty() && !streamingDraft.active) {
+        Box(modifier = modifier.fillMaxSize()) {
+            if (syncingHistory) {
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp)
+                        .align(Alignment.TopCenter),
+                )
+            }
             Column(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 ToolIcon(tool = tool, size = 36.dp, contentDescription = null)
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    text = "已连接到 ${ToolVisuals.label(tool)} 会话",
+                    text = if (syncingHistory) "正在同步 ${ToolVisuals.label(tool)} 对话…" else "已连接到 ${ToolVisuals.label(tool)} 会话",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
-                    text = "可发送指令到远程会话，或切换到 Terminal 查看实时 PTY 输出",
+                    text = when {
+                        isRpcSession -> "直接发送指令即可开始原生流式对话"
+                        syncingHistory -> "历史消息加载中，你可以直接开始输入或切换到 Terminal 查看实时输出"
+                        else -> "直接发送指令即可开始现代化流式对话，或切换到 Terminal 查看原始 PTY"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Spacer(Modifier.height(4.dp))
-                OutlinedButton(
-                    onClick = onSwitchToTerminal,
-                    modifier = Modifier.defaultMinSize(minHeight = 48.dp),
-                ) {
-                    Text("查看 Terminal")
+                if (!isRpcSession) {
+                    Spacer(Modifier.height(4.dp))
+                    OutlinedButton(
+                        onClick = onSwitchToTerminal,
+                        modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                    ) {
+                        Text("查看 Terminal")
+                    }
                 }
             }
         }
@@ -1093,35 +1423,74 @@ private fun ChatView(
     val showJumpToBottom by remember {
         derivedStateOf { listState.canScrollForward }
     }
+    val mergeStreamingIntoLastTurn = streamingDraft.active &&
+        optimisticUserMessages.isEmpty() &&
+        turns.lastOrNull() is ChatTurn.Assistant
+    val showStandaloneStreaming = streamingDraft.active && !mergeStreamingIntoLastTurn
+    val totalItems = turns.size + optimisticUserMessages.size + if (showStandaloneStreaming) 1 else 0
+    val hasTailActivity = optimisticUserMessages.isNotEmpty() || streamingDraft.active
 
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
+    LaunchedEffect(totalItems, streamingDraft.text.length / 40, streamingDraft.thinking.length / 80) {
+        if (totalItems > 0) {
             val info = listState.layoutInfo
             val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: 0
             val nearBottom = info.totalItemsCount <= 1 || lastVisible >= info.totalItemsCount - 2
-            val lastIsUser = messages.last().role.contains("USER", ignoreCase = true)
-            if (lastIsUser || nearBottom) {
-                listState.scrollToItem(messages.lastIndex)
+            val lastIsUser = optimisticUserMessages.isNotEmpty() || (turns.lastOrNull() is ChatTurn.User)
+            if (lastIsUser || (nearBottom && (hasTailActivity || turns.isNotEmpty()))) {
+                scrollToListEnd(listState, totalItems - 1)
             }
         }
     }
 
     Box(modifier = modifier.fillMaxSize()) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .fillMaxSize()
-                .testTag("chat_list"),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(22.dp),
-        ) {
-            items(messages, key = { it.seq }) { msg ->
-                val parts = remember(msg.partsJson) { decodeParts(msg.partsJson) }
-                val isUser = msg.role.contains("USER", ignoreCase = true)
-                Box(modifier = Modifier.animateItem()) {
-                    if (isUser) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            if (syncingHistory) {
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp),
+                )
+            }
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .testTag("chat_list"),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(22.dp),
+            ) {
+                itemsIndexed(turns, key = { _, t -> t.key }) { idx, turn ->
+                    Box(modifier = Modifier.animateItem()) {
+                        when (turn) {
+                            is ChatTurn.User -> UserPromptTurn(
+                                parts = turn.textParts + turn.mediaParts,
+                                fetchedMediaPaths = fetchedMediaPaths,
+                                onCopyText = onCopyText,
+                                onQuote = { excerpt -> onQuoteMessage("你", excerpt) },
+                                onAutoFetchMedia = onAutoFetchMedia,
+                                onOpenImage = onOpenImage,
+                                onOpenVideo = onOpenVideo,
+                            )
+                            is ChatTurn.Assistant -> ModernAssistantTurn(
+                                tool = tool,
+                                turn = turn,
+                                liveDraft = if (mergeStreamingIntoLastTurn && idx == turns.lastIndex) streamingDraft else null,
+                                fetchedMediaPaths = fetchedMediaPaths,
+                                onCopyText = onCopyText,
+                                onQuote = { author, excerpt -> onQuoteMessage(author, excerpt) },
+                                onAutoFetchMedia = onAutoFetchMedia,
+                                onOpenImage = onOpenImage,
+                                onOpenVideo = onOpenVideo,
+                                onSelectQuestionOption = onSelectQuestionOption,
+                            )
+                        }
+                    }
+                }
+                items(optimisticUserMessages, key = { "opt-${it.id}" }) { opt ->
+                    Box(modifier = Modifier.animateItem()) {
                         UserPromptTurn(
-                            parts = parts,
+                            parts = listOf(UiPart.Text(opt.text)),
                             fetchedMediaPaths = fetchedMediaPaths,
                             onCopyText = onCopyText,
                             onQuote = { excerpt -> onQuoteMessage("你", excerpt) },
@@ -1129,30 +1498,989 @@ private fun ChatView(
                             onOpenImage = onOpenImage,
                             onOpenVideo = onOpenVideo,
                         )
-                    } else {
-                        AssistantTurn(
+                    }
+                }
+                if (showStandaloneStreaming) {
+                    item(key = "streaming-assistant-draft") {
+                        StreamingAssistantTurn(
                             tool = tool,
-                            model = msg.model,
-                            parts = parts,
-                            fetchedMediaPaths = fetchedMediaPaths,
+                            draft = streamingDraft,
                             onCopyText = onCopyText,
-                            onQuote = { author, excerpt -> onQuoteMessage(author, excerpt) },
-                            onAutoFetchMedia = onAutoFetchMedia,
-                            onOpenImage = onOpenImage,
-                            onOpenVideo = onOpenVideo,
                         )
                     }
                 }
             }
         }
 
-        if (showJumpToBottom) {
+        if (showJumpToBottom && totalItems > 0) {
             ScrollToBottomButton(
-                onClick = { scope.launch { listState.scrollToItem(messages.lastIndex) } },
+                onClick = { scope.launch { scrollToListEnd(listState, totalItems - 1) } },
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(12.dp),
             )
+        }
+    }
+}
+
+@Composable
+private fun ModernAssistantTurn(
+    tool: String,
+    turn: ChatTurn.Assistant,
+    liveDraft: StreamingMessageState? = null,
+    fetchedMediaPaths: Map<String, String>,
+    onCopyText: (String, String) -> Unit,
+    onQuote: (String, String) -> Unit,
+    onAutoFetchMedia: (UiPart.Media) -> Unit,
+    onOpenImage: (UiPart.Media) -> Unit,
+    onOpenVideo: (UiPart.Media) -> Unit,
+    onSelectQuestionOption: ((optionIndex: Int, optionLabel: String, isSingleSelect: Boolean) -> Unit)? = null,
+) {
+    val plainText = remember(turn.textBlocks) { turn.textBlocks.joinToString("\n\n") }
+    val authorLabel = turn.model?.takeIf { it.isNotBlank() }
+        ?: liveDraft?.model?.takeIf { it.isNotBlank() }
+        ?: ToolVisuals.label(tool)
+    val liveText = remember(liveDraft?.text) {
+        sanitizeStreamingDraftText(liveDraft?.text.orEmpty())
+    }
+    val liveStatus = liveDraft?.status?.ifBlank {
+        if (liveText.isNotBlank()) "正在生成回复…" else "思考中…"
+    }.orEmpty()
+    val hasWorkLog = turn.timeline.isNotEmpty() ||
+        turn.thinkingBlocks.isNotEmpty() ||
+        turn.activities.isNotEmpty() ||
+        !liveDraft?.thinking.isNullOrBlank()
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            ToolIcon(tool = tool, size = 22.dp, contentDescription = null)
+            Text(
+                text = authorLabel,
+                style = MaterialTheme.typography.titleSmall.copy(
+                    fontSize = 15.sp,
+                    lineHeight = 20.sp,
+                    fontWeight = FontWeight.SemiBold,
+                ),
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            if (liveDraft != null && liveDraft.active) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    strokeWidth = 1.8.dp,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                if (liveStatus.isNotBlank()) {
+                    Text(
+                        text = liveStatus,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+
+        if (hasWorkLog) {
+            TurnWorkLogCard(
+                thinkingBlocks = turn.thinkingBlocks,
+                activities = turn.activities,
+                timeline = turn.timeline,
+                liveDraft = liveDraft,
+                onCopyText = onCopyText,
+            )
+        }
+
+        turn.textBlocks.forEach { text ->
+            MarkdownContent(
+                md = text,
+                textColor = MaterialTheme.colorScheme.onBackground,
+                onCopyCode = { code -> onCopyText(code, "代码") },
+            )
+        }
+
+        if (liveDraft != null && liveDraft.active && liveText.isNotBlank() && liveText != plainText) {
+            val renderedMd = remember(liveText) { "${liveText.trimEnd('\n')} ▍" }
+            MarkdownContent(
+                md = renderedMd,
+                textColor = MaterialTheme.colorScheme.onBackground,
+                onCopyCode = { code -> onCopyText(code, "代码") },
+            )
+        }
+
+        turn.questions.forEach { prompt ->
+            InteractiveQuestionCard(
+                prompt = prompt,
+                canSelect = !prompt.answered && onSelectQuestionOption != null,
+                onSelectOption = { idx, opt ->
+                    onSelectQuestionOption?.invoke(idx, opt.label, turn.questions.size == 1 && !prompt.multiSelect)
+                },
+            )
+        }
+
+        turn.mediaParts.forEach { media ->
+            MediaPartCard(
+                media = media,
+                resolvedPath = fetchedMediaPaths[media.mediaId],
+                onAutoFetch = { onAutoFetchMedia(media) },
+                onOpenImage = { onOpenImage(media) },
+                onOpenVideo = { onOpenVideo(media) },
+            )
+        }
+
+        if (liveDraft == null && plainText.isNotBlank()) {
+            MessageActionRow(
+                copyContentDescription = "复制回复",
+                quoteContentDescription = "引用回复",
+                onCopy = { onCopyText(plainText, "回复") },
+                onQuote = { onQuote(authorLabel, summarizeExcerpt(plainText)) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun InteractiveQuestionCard(
+    prompt: ChatQuestionPrompt,
+    canSelect: Boolean,
+    onSelectOption: (Int, ChatQuestionOption) -> Unit,
+) {
+    var selectedIdx by remember(prompt.callId, prompt.question) { mutableIntStateOf(-1) }
+    val extras = SidekickThemeExtras.colors
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("interactive_question_card"),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (prompt.header.isNotBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                    ) {
+                        Text(
+                            text = prompt.header,
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        )
+                    }
+                }
+                Text(
+                    text = if (prompt.answered || selectedIdx >= 0) "已回答" else "等待你的选择",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (prompt.answered || selectedIdx >= 0) extras.success else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                text = prompt.question,
+                style = MaterialTheme.typography.titleSmall.copy(
+                    fontSize = 15.sp,
+                    lineHeight = 21.sp,
+                    fontWeight = FontWeight.Medium,
+                ),
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                prompt.options.forEachIndexed { idx, opt ->
+                    val isPicked = selectedIdx == idx
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 48.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable(enabled = canSelect && selectedIdx < 0) {
+                                selectedIdx = idx
+                                onSelectOption(idx, opt)
+                            },
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (isPicked) {
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                        } else {
+                            MaterialTheme.colorScheme.surface
+                        },
+                        border = BorderStroke(
+                            width = if (isPicked) 1.dp else 0.5.dp,
+                            color = if (isPicked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                        ),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Text(
+                                text = "${idx + 1}.",
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.SemiBold,
+                                ),
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                            ) {
+                                Text(
+                                    text = opt.label,
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                if (opt.description.isNotBlank()) {
+                                    Text(
+                                        text = opt.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            if (canSelect && selectedIdx < 0) {
+                                Icon(
+                                    imageVector = Icons.Rounded.ChevronRight,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            if (prompt.answered && prompt.answerSummary.isNotBlank()) {
+                Text(
+                    text = prompt.answerSummary.take(180),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TurnWorkLogCard(
+    thinkingBlocks: List<String>,
+    activities: List<TranslatedToolActivity>,
+    timeline: List<TurnWorkStep> = emptyList(),
+    liveDraft: StreamingMessageState? = null,
+    onCopyText: (String, String) -> Unit,
+) {
+    val extras = SidekickThemeExtras.colors
+    val liveActive = liveDraft?.active == true
+    val liveThinking = remember(liveDraft?.thinking) { liveDraft?.thinking?.trim().orEmpty() }
+    val summaryText = remember(thinkingBlocks.size, activities, liveActive, liveDraft?.status) {
+        val base = summarizeTurnWorkLog(thinkingBlocks.size, activities)
+        if (liveActive) {
+            val st = liveDraft.status.ifBlank { "执行中…" }
+            if (activities.isNotEmpty()) "$base · $st" else st
+        } else {
+            base
+        }
+    }
+    val totalAdded = remember(activities) { activities.sumOf { it.addedLines } }
+    val totalRemoved = remember(activities) { activities.sumOf { it.removedLines } }
+    val hasError = remember(activities) { activities.any { it.isError } }
+    val isRunning = liveActive || remember(activities) { activities.any { it.isRunning } }
+    var userExpandedOverride by remember { mutableStateOf<Boolean?>(null) }
+    val expanded = userExpandedOverride ?: isRunning
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("turn_work_log_card"),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = 48.dp)
+                    .clickable { userExpandedOverride = !expanded }
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (isRunning) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 1.8.dp,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                } else {
+                    Icon(
+                        imageVector = when {
+                            hasError -> Icons.Rounded.ErrorOutline
+                            activities.isNotEmpty() -> Icons.Rounded.CheckCircle
+                            else -> Icons.Rounded.Psychology
+                        },
+                        contentDescription = null,
+                        tint = when {
+                            hasError -> MaterialTheme.colorScheme.error
+                            activities.isNotEmpty() -> extras.success
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+                Text(
+                    text = summaryText,
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (totalAdded > 0 || totalRemoved > 0) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        if (totalAdded > 0) {
+                            Text(
+                                text = "+$totalAdded",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.SemiBold,
+                                ),
+                                color = extras.success,
+                            )
+                        }
+                        if (totalRemoved > 0) {
+                            Text(
+                                text = "-$totalRemoved",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.SemiBold,
+                                ),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
+                Icon(
+                    imageVector = if (expanded) Icons.Rounded.ExpandMore else Icons.Rounded.ChevronRight,
+                    contentDescription = if (expanded) "收起执行过程" else "展开执行过程",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+
+            if (liveActive && liveThinking.isNotBlank() && !expanded) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    HairlineDivider()
+                    Text(
+                        text = liveThinking.takeLast(360),
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontSize = 12.5.sp,
+                            lineHeight = 18.sp,
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.testTag("streaming_thinking_box"),
+                    )
+                }
+            }
+
+            AnimatedVisibility(visible = expanded) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    HairlineDivider()
+                    if (timeline.isNotEmpty()) {
+                        timeline.forEach { step ->
+                            when (step) {
+                                is TurnWorkStep.Thinking -> LiveThinkingBlock(
+                                    text = step.text,
+                                    isStreaming = false,
+                                )
+                                is TurnWorkStep.Note -> Text(
+                                    text = step.text,
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        fontSize = 13.sp,
+                                        lineHeight = 19.sp,
+                                    ),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                )
+                                is TurnWorkStep.Activity -> WorkLogActivityRow(
+                                    activity = step.activity,
+                                    onCopyText = onCopyText,
+                                )
+                            }
+                        }
+                    } else {
+                        if (thinkingBlocks.isNotEmpty()) {
+                            LiveThinkingBlock(
+                                text = thinkingBlocks.joinToString("\n\n"),
+                                isStreaming = false,
+                            )
+                        }
+                        activities.forEach { act ->
+                            WorkLogActivityRow(
+                                activity = act,
+                                onCopyText = onCopyText,
+                            )
+                        }
+                    }
+                    if (liveActive && liveThinking.isNotBlank()) {
+                        LiveThinkingBlock(
+                            text = liveThinking,
+                            isStreaming = true,
+                            modifier = Modifier.testTag("streaming_thinking_box"),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkLogActivityRow(
+    activity: TranslatedToolActivity,
+    onCopyText: (String, String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val extras = SidekickThemeExtras.colors
+    val hasDetail = activity.detailInput.isNotBlank() || activity.detailDiff.isNotBlank() || activity.detailOutput.isNotBlank()
+    val showLivePreview = activity.isRunning && !expanded && (activity.detailInput.isNotBlank() || activity.detailOutput.isNotBlank())
+    val icon = when (activity.kind) {
+        ToolActivityKind.COMMAND -> Icons.Rounded.Terminal
+        ToolActivityKind.READ -> Icons.Rounded.Description
+        ToolActivityKind.EDIT -> Icons.Rounded.Edit
+        ToolActivityKind.SEARCH -> Icons.Rounded.Search
+        ToolActivityKind.WEB -> Icons.Rounded.Language
+        ToolActivityKind.AGENT -> Icons.Rounded.Psychology
+        ToolActivityKind.OTHER -> Icons.Rounded.Build
+    }
+    val tint = when {
+        activity.isError -> MaterialTheme.colorScheme.error
+        activity.isRunning -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .defaultMinSize(minHeight = 48.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(enabled = hasDetail) { expanded = !expanded }
+                .padding(horizontal = 6.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (activity.isRunning) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    strokeWidth = 1.6.dp,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            } else {
+                Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
+            }
+            Text(
+                text = activity.verb,
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+            )
+            if (activity.target.isNotBlank()) {
+                Text(
+                    text = activity.target,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = if (activity.kind == ToolActivityKind.COMMAND || activity.kind == ToolActivityKind.READ || activity.kind == ToolActivityKind.EDIT) {
+                            FontFamily.Monospace
+                        } else {
+                            FontFamily.Default
+                        },
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+            } else {
+                Spacer(Modifier.weight(1f))
+            }
+            if (activity.addedLines > 0 || activity.removedLines > 0) {
+                Text(
+                    text = "+${activity.addedLines} -${activity.removedLines}",
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                    color = extras.success,
+                )
+            }
+            if (activity.isError) {
+                Icon(
+                    imageVector = Icons.Rounded.ErrorOutline,
+                    contentDescription = "失败",
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+            if (hasDetail) {
+                Icon(
+                    imageVector = if (expanded) Icons.Rounded.ExpandMore else Icons.Rounded.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
+
+        if (showLivePreview) {
+            val previewTail = remember(activity.detailOutput) {
+                activity.detailOutput.lines().filter { it.isNotEmpty() }.takeLast(6).joinToString("\n")
+            }
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 18.dp, top = 2.dp, bottom = 4.dp),
+                shape = RoundedCornerShape(8.dp),
+                color = extras.codeBg,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    if (activity.detailInput.isNotBlank()) {
+                        Text(
+                            text = if (activity.kind == ToolActivityKind.COMMAND) "$ ${activity.detailInput.take(240)}" else activity.detailInput.take(240),
+                            fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, lineHeight = 16.sp),
+                            color = extras.codeText.copy(alpha = 0.85f),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    if (previewTail.isNotBlank()) {
+                        Text(
+                            text = previewTail,
+                            fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp, lineHeight = 16.sp),
+                            color = extras.codeText.copy(alpha = 0.9f),
+                            maxLines = 6,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+
+        AnimatedVisibility(visible = expanded && hasDetail) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 18.dp, top = 4.dp, bottom = 4.dp),
+                shape = RoundedCornerShape(10.dp),
+                color = extras.codeBg,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (activity.detailInput.isNotBlank()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            SelectionContainer(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (activity.kind == ToolActivityKind.COMMAND) "$ ${activity.detailInput}" else activity.detailInput,
+                                    fontFamily = FontFamily.Monospace,
+                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp, lineHeight = 18.sp),
+                                    color = extras.codeText,
+                                )
+                            }
+                            IconButton(onClick = { onCopyText(activity.detailInput, "指令") }) {
+                                Icon(
+                                    imageVector = Icons.Rounded.ContentCopy,
+                                    contentDescription = "复制参数",
+                                    tint = extras.codeText.copy(alpha = 0.72f),
+                                    modifier = Modifier.size(15.dp),
+                                )
+                            }
+                        }
+                    }
+                    if (activity.detailDiff.isNotBlank()) {
+                        val errorColor = MaterialTheme.colorScheme.error
+                        val diffAnnotated = remember(activity.detailDiff, extras.success, errorColor, extras.codeText) {
+                            buildAnnotatedString {
+                                activity.detailDiff.lines().forEachIndexed { idx, ln ->
+                                    if (idx > 0) append('\n')
+                                    val color = when {
+                                        ln.startsWith("+") && !ln.startsWith("+++") -> extras.success
+                                        ln.startsWith("-") && !ln.startsWith("---") -> errorColor
+                                        else -> extras.codeText.copy(alpha = 0.78f)
+                                    }
+                                    withStyle(SpanStyle(color = color)) {
+                                        append(ln)
+                                    }
+                                }
+                            }
+                        }
+                        SelectionContainer {
+                            Text(
+                                text = diffAnnotated,
+                                fontFamily = FontFamily.Monospace,
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, lineHeight = 17.sp),
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            )
+                        }
+                    }
+                    if (activity.detailOutput.isNotBlank()) {
+                        HairlineDivider()
+                        SelectionContainer {
+                            Text(
+                                text = activity.detailOutput.take(2400),
+                                fontFamily = FontFamily.Monospace,
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, lineHeight = 17.sp),
+                                color = if (activity.isError) MaterialTheme.colorScheme.error else extras.codeText.copy(alpha = 0.85f),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StreamingAssistantTurn(
+    tool: String,
+    draft: StreamingMessageState,
+    onCopyText: (String, String) -> Unit,
+) {
+    val authorLabel = draft.model?.takeIf { it.isNotBlank() } ?: ToolVisuals.label(tool)
+    // Render live tokens directly and immediately with ZERO artificial typewriter delay.
+    val visibleText = remember(draft.text) { sanitizeStreamingDraftText(draft.text) }
+    val liveThinking = remember(draft.thinking) { draft.thinking.trim() }
+    val statusLabel = draft.status.ifBlank {
+        when {
+            visibleText.isNotBlank() -> "正在生成回复…"
+            else -> "思考中…"
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("streaming_assistant_turn"),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            ToolIcon(tool = tool, size = 22.dp, contentDescription = null)
+            Text(
+                text = authorLabel,
+                style = MaterialTheme.typography.titleSmall.copy(
+                    fontSize = 15.sp,
+                    lineHeight = 20.sp,
+                    fontWeight = FontWeight.SemiBold,
+                ),
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            CircularProgressIndicator(
+                modifier = Modifier.size(14.dp),
+                strokeWidth = 1.8.dp,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                text = statusLabel,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (liveThinking.isNotBlank()) {
+            LiveThinkingBlock(
+                text = liveThinking,
+                isStreaming = visibleText.isBlank(),
+                modifier = Modifier.testTag("streaming_thinking_box"),
+            )
+        }
+        if (visibleText.isNotBlank()) {
+            val renderedMd = remember(visibleText, draft.active) {
+                val clean = visibleText.trimEnd('\n')
+                if (draft.active && clean.isNotEmpty()) "$clean ▍" else clean
+            }
+            MarkdownContent(
+                md = renderedMd,
+                textColor = MaterialTheme.colorScheme.onBackground,
+                onCopyCode = { code -> onCopyText(code, "代码") },
+            )
+        }
+    }
+}
+
+@Composable
+private fun InteractiveDialogOverlay(
+    dialog: InteractiveDialogState,
+    onSelectOption: (Int) -> Unit,
+    onSearchChanged: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onSwitchToTerminal: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val extras = SidekickThemeExtras.colors
+    var localQuery by remember(dialog.kind, dialog.title) { mutableStateOf(dialog.query) }
+    LaunchedEffect(dialog.query) {
+        if (dialog.query != localQuery && dialog.query.isNotEmpty()) {
+            localQuery = dialog.query
+        }
+    }
+
+    val headerIcon = when (dialog.kind) {
+        "model" -> Icons.Rounded.SwapHoriz
+        "thinking" -> Icons.Rounded.Psychology
+        "permission", "confirm" -> Icons.Rounded.ErrorOutline
+        else -> Icons.Rounded.Build
+    }
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("interactive_dialog_overlay"),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        tonalElevation = 3.dp,
+        shadowElevation = 6.dp,
+        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    imageVector = headerIcon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp),
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = dialog.title.ifBlank { "交互选择" },
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (dialog.subtitle.isNotBlank()) {
+                        Text(
+                            text = dialog.subtitle,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = "关闭弹窗",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+
+            if (dialog.searchable) {
+                OutlinedTextField(
+                    value = localQuery,
+                    onValueChange = {
+                        localQuery = it
+                        onSearchChanged(it)
+                    },
+                    placeholder = { Text("搜索过滤选项…") },
+                    singleLine = true,
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Rounded.Search,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    },
+                    trailingIcon = if (localQuery.isNotEmpty()) {
+                        {
+                            IconButton(onClick = {
+                                localQuery = ""
+                                onSearchChanged("")
+                            }) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Close,
+                                    contentDescription = "清除搜索",
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                        }
+                    } else {
+                        null
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("interactive_dialog_search"),
+                )
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f, fill = false)
+                    .heightIn(max = 260.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                if (dialog.options.isEmpty()) {
+                    Text(
+                        text = "没有匹配的选项，试试修改或清除搜索关键词。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 12.dp),
+                    )
+                }
+                dialog.options.forEachIndexed { idx, opt ->
+                    val isSelected = idx == dialog.selectedIndex || opt.selected
+                    Surface(
+                        onClick = { onSelectOption(idx) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 48.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (isSelected) {
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                        } else {
+                            MaterialTheme.colorScheme.surface
+                        },
+                        border = BorderStroke(
+                            width = if (isSelected) 1.dp else 0.5.dp,
+                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                        ),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Text(
+                                        text = opt.label,
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            fontWeight = if (isSelected || opt.current) FontWeight.SemiBold else FontWeight.Normal,
+                                        ),
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false),
+                                    )
+                                    if (opt.current) {
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = extras.success.copy(alpha = 0.16f),
+                                        ) {
+                                            Text(
+                                                text = "当前",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = extras.success,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
+                                            )
+                                        }
+                                    }
+                                }
+                                if (opt.description.isNotBlank()) {
+                                    Text(
+                                        text = opt.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                            Icon(
+                                imageVector = if (opt.current) Icons.Rounded.CheckCircle else Icons.Rounded.ChevronRight,
+                                contentDescription = null,
+                                tint = if (opt.current) extras.success else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                ) {
+                    Text("取消 (Esc)")
+                }
+                Spacer(Modifier.weight(1f))
+                TextButton(
+                    onClick = onSwitchToTerminal,
+                    modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                ) {
+                    Text("在 Terminal 中操作")
+                }
+            }
         }
     }
 }
@@ -1388,6 +2716,84 @@ private fun summarizeExcerpt(raw: String, maxChars: Int = 160): String {
         .filter { it.isNotEmpty() }
         .joinToString(" ")
     return if (clean.length <= maxChars) clean else clean.take(maxChars - 1) + "…"
+}
+
+@Composable
+private fun LiveThinkingBlock(
+    text: String,
+    isStreaming: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val clean = remember(text) { text.trim() }
+    if (clean.isEmpty()) return
+    var showFull by remember(clean.length > 1200) { mutableStateOf(false) }
+    val displayText = when {
+        isStreaming -> if (clean.length > 1600) "…" + clean.takeLast(1600) else clean
+        clean.length > 1200 && !showFull -> clean.take(1200) + "…"
+        else -> clean
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .animateContentSize()
+            .padding(vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            if (isStreaming) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(12.dp),
+                    strokeWidth = 1.6.dp,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Rounded.Psychology,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+            Text(
+                text = if (isStreaming) "正在思考" else "思考过程",
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
+                color = if (isStreaming) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(IntrinsicSize.Min)
+                .then(
+                    if (!isStreaming && clean.length > 1200) {
+                        Modifier.clickable { showFull = !showFull }
+                    } else {
+                        Modifier
+                    },
+                )
+                .padding(start = 6.dp, top = 2.dp, bottom = 2.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(2.dp)
+                    .fillMaxHeight()
+                    .background(
+                        if (isStreaming) MaterialTheme.colorScheme.primary.copy(alpha = 0.55f) else MaterialTheme.colorScheme.outlineVariant,
+                        RoundedCornerShape(1.dp),
+                    ),
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = displayText,
+                style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
 }
 
 @Composable
@@ -3178,18 +4584,31 @@ private fun SessionComposer(
     tool: String,
     localTyping: Boolean,
     defaultShowKeycaps: Boolean,
+    showKeycapToggle: Boolean = true,
+    isRunning: Boolean = false,
+    sessionConfig: SessionConfigUi? = null,
+    pendingRuntimeRequests: List<RuntimeRequestUi> = emptyList(),
+    workspaceContext: dev.ddgrcf.sidekick.vm.WorkspaceContextUi? = null,
+    turnStartedMs: Long? = null,
+    pendingInsertSnippet: Pair<Int, String>? = null,
     dismissSignal: Int,
     pendingAttachments: List<PendingAttachment>,
     quotedMessage: QuotedMessage?,
     fileSuggestions: List<WorkspaceFileSuggestion>,
     slashCommands: List<SlashCommandSuggestion>,
     screenLines: List<AnsiLine>,
+    onOpenDiffSheet: () -> Unit = {},
+    onOpenNvimSheet: () -> Unit = {},
     onSearchFiles: (String) -> Unit,
     onClearQuote: () -> Unit,
     onAddAttachment: (PendingAttachment) -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onSendInput: (String, Boolean) -> Unit,
     onSendKey: (Key) -> Unit,
+    onInterruptTurn: () -> Unit = { onSendKey(Key.KEY_CTRL_C) },
+    onOpenSettingsSheet: () -> Unit = {},
+    onRespondApproval: (requestId: String, decision: String, feedback: String) -> Unit = { _, _, _ -> },
+    onRespondUserInput: (requestId: String, answers: List<RuntimeAnswerInput>, cancelled: Boolean) -> Unit = { _, _, _ -> },
     onFocusChanged: (Boolean) -> Unit,
 ) {
     var fieldState by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
@@ -3215,6 +4634,14 @@ private fun SessionComposer(
     @Suppress("DEPRECATION")
     val clipboard = LocalClipboardManager.current
     val extras = SidekickThemeExtras.colors
+
+    LaunchedEffect(pendingInsertSnippet?.first) {
+        val snippet = pendingInsertSnippet?.second
+        if (!snippet.isNullOrBlank()) {
+            val next = if (fieldState.text.isBlank()) snippet else "${fieldState.text.trimEnd()}\n$snippet"
+            updateText(next)
+        }
+    }
 
     LaunchedEffect(dismissSignal) {
         if (dismissSignal > 0) {
@@ -3278,7 +4705,14 @@ private fun SessionComposer(
 
     fun dispatchSend() {
         val payload = formatMessageWithQuote(quotedMessage, text)
+        val pendingApproval = pendingRuntimeRequests.firstOrNull { it.kind == RuntimeRequestKindUi.APPROVAL }
         when {
+            payload.isNotEmpty() && pendingApproval != null -> {
+                onRespondApproval(pendingApproval.requestId, "decline", payload)
+                updateText("")
+                livePtySlashMode = false
+                onClearQuote()
+            }
             payload.isNotEmpty() || pendingAttachments.isNotEmpty() -> {
                 onSendInput(payload, true)
                 updateText("")
@@ -3324,6 +4758,24 @@ private fun SessionComposer(
             }
         }
 
+        val topApproval = pendingRuntimeRequests.firstOrNull { it.kind == RuntimeRequestKindUi.APPROVAL }
+        val topUserInput = if (topApproval == null) {
+            pendingRuntimeRequests.firstOrNull { it.kind == RuntimeRequestKindUi.USER_INPUT }
+        } else {
+            null
+        }
+        if (topApproval != null) {
+            DockedApprovalCard(
+                request = topApproval,
+                onDecision = { dec -> onRespondApproval(topApproval.requestId, dec, "") },
+            )
+        } else if (topUserInput != null) {
+            DockedUserInputCard(
+                request = topUserInput,
+                onSubmit = { answers, cancelled -> onRespondUserInput(topUserInput.requestId, answers, cancelled) },
+            )
+        }
+
         AnimatedVisibility(visible = !autocompleteDismissed && (slashQuery != null || livePtySlashMode)) {
             SlashCommandAutocompleteSheet(
                 tool = tool,
@@ -3341,7 +4793,20 @@ private fun SessionComposer(
                 },
                 onSelectCommand = { cmd ->
                     livePtySlashMode = false
-                    updateText(if (cmd.argsHint.isNotBlank()) "/${cmd.name} " else "/${cmd.name}")
+                    val lower = cmd.name.lowercase()
+                    val isSettingsCmd = lower in setOf("model", "models", "thinking", "settings", "config")
+                    if (isSettingsCmd && sessionConfig != null) {
+                        updateText("")
+                        onOpenSettingsSheet()
+                    } else if (cmd.argsHint.isBlank() && lower in setOf(
+                            "model", "models", "thinking", "settings", "config", "theme", "resume", "tree",
+                        )
+                    ) {
+                        updateText("")
+                        onSendInput("/${cmd.name}", true)
+                    } else {
+                        updateText(if (cmd.argsHint.isNotBlank()) "/${cmd.name} " else "/${cmd.name}")
+                    }
                 },
                 onSendKey = onSendKey,
             )
@@ -3420,6 +4885,13 @@ private fun SessionComposer(
             }
         }
 
+        SidekickContextBar(
+            workspaceContext = workspaceContext,
+            turnStartedMs = turnStartedMs,
+            onOpenDiff = onOpenDiffSheet,
+            onOpenNvim = onOpenNvimSheet,
+        )
+
         // Unified floating composer capsule
         Surface(
             modifier = Modifier.fillMaxWidth(),
@@ -3445,7 +4917,11 @@ private fun SessionComposer(
                     },
                     placeholder = {
                         Text(
-                            text = "输入指令…",
+                            text = if (pendingRuntimeRequests.any { it.kind == RuntimeRequestKindUi.APPROVAL }) {
+                                "输入反馈以拒绝并引导 Agent…"
+                            } else {
+                                "输入指令…"
+                            },
                             style = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp, lineHeight = 23.sp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -3518,32 +4994,41 @@ private fun SessionComposer(
                             else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    IconButton(onClick = { showKeycaps = !showKeycaps }) {
-                        Icon(
-                            imageVector = Icons.Rounded.Keyboard,
-                            contentDescription = "快捷键栏",
-                            tint = if (showKeycaps) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                    if (showKeycapToggle) {
+                        IconButton(onClick = { showKeycaps = !showKeycaps }) {
+                            Icon(
+                                imageVector = Icons.Rounded.Keyboard,
+                                contentDescription = "快捷键栏",
+                                tint = if (showKeycaps) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    if (sessionConfig != null) {
+                        ComposerConfigPill(
+                            config = sessionConfig,
+                            onClick = onOpenSettingsSheet,
                         )
                     }
                     Spacer(Modifier.weight(1f))
 
                     val hasPayload = text.isNotEmpty() || quotedMessage != null || pendingAttachments.isNotEmpty()
-                    val sendBg = if (hasPayload) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.surfaceContainerHigh
+                    val showStop = isRunning && !hasPayload
+                    val sendBg = when {
+                        showStop -> MaterialTheme.colorScheme.errorContainer
+                        hasPayload -> MaterialTheme.colorScheme.primary
+                        else -> MaterialTheme.colorScheme.surfaceContainerHigh
                     }
-                    val sendFg = if (hasPayload) {
-                        MaterialTheme.colorScheme.onPrimary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
+                    val sendFg = when {
+                        showStop -> MaterialTheme.colorScheme.onErrorContainer
+                        hasPayload -> MaterialTheme.colorScheme.onPrimary
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
                     }
                     Box(
                         modifier = Modifier
                             .size(48.dp)
                             .clip(CircleShape)
-                            .clickable(onClick = ::dispatchSend),
+                            .clickable(onClick = { if (showStop) onInterruptTurn() else dispatchSend() }),
                         contentAlignment = Alignment.Center,
                     ) {
                         Surface(
@@ -3553,8 +5038,8 @@ private fun SessionComposer(
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
-                                    imageVector = Icons.Rounded.ArrowUpward,
-                                    contentDescription = "发送",
+                                    imageVector = if (showStop) Icons.Rounded.Stop else Icons.Rounded.ArrowUpward,
+                                    contentDescription = if (showStop) "停止生成" else "发送",
                                     tint = sendFg,
                                     modifier = Modifier.size(19.dp),
                                 )

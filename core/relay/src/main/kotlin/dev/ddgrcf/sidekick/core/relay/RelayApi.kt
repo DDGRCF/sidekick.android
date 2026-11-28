@@ -105,6 +105,12 @@ class RelayApi(
         return json.decodeFromString(body)
     }
 
+    suspend fun devLogin(baseUrl: String): TokenPair {
+        val (status, body) = postJson(baseUrl, "/auth/dev/login", null, "{}")
+        if (status != 200) throw parseError(status, body)
+        return json.decodeFromString(body)
+    }
+
     suspend fun enrollTotp(baseUrl: String, accessToken: String): TotpEnrollResponse {
         val (status, body) = postJson(baseUrl, "/auth/totp/enroll", accessToken, "{}")
         if (status != 200) throw parseError(status, body)

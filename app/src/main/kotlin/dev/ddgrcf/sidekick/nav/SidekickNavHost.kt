@@ -139,6 +139,9 @@ fun SidekickNavHost(authViewModel: AuthViewModel = hiltViewModel()) {
                     onRequireTotp = { ticket, enrolled ->
                         backStack.add(AppRoute.TotpRoute(ticket, enrolled))
                     },
+                    onDevLogin = if (BuildConfig.DEBUG) {
+                        { authViewModel.loginDev() }
+                    } else null,
                     onDemoPreview = if (BuildConfig.DEBUG) {
                         { backStack.add(AppRoute.DemoRoute) }
                     } else null,
