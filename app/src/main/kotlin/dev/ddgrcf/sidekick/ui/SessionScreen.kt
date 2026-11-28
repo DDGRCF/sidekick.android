@@ -31,6 +31,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.transformable
@@ -97,6 +98,7 @@ import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.FormatQuote
 import androidx.compose.material.icons.rounded.Stop
@@ -114,6 +116,8 @@ import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material.icons.rounded.TextDecrease
 import androidx.compose.material.icons.rounded.TextIncrease
+import androidx.compose.material.icons.rounded.UnfoldLess
+import androidx.compose.material.icons.rounded.UnfoldMore
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -1618,6 +1622,18 @@ private fun ChatView(
     }
 
     var bubbleMenuText by remember { mutableStateOf<String?>(null) }
+    val workLogExpandedOverrides = remember { mutableStateMapOf<String, Boolean>() }
+    var collapseAllSignal by remember { mutableIntStateOf(0) }
+    var assistantMenuTarget by remember { mutableStateOf<AssistantTurnMenuTarget?>(null) }
+    val anyAssistantHasWorkLog = remember(turns, mergeStreamingIntoLastTurn, streamingDraft.thinking) {
+        turns.any { t ->
+            t is ChatTurn.Assistant && (
+                t.timeline.isNotEmpty() ||
+                    t.thinkingBlocks.isNotEmpty() ||
+                    t.activities.isNotEmpty()
+                )
+        } || (mergeStreamingIntoLastTurn && streamingDraft.thinking.isNotBlank())
+    }
 
     Box(modifier = modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -1652,6 +1668,10 @@ private fun ChatView(
                                 tool = tool,
                                 turn = turn,
                                 liveDraft = if (mergeStreamingIntoLastTurn && idx == turns.lastIndex) streamingDraft else null,
+                                workLogExpandedOverride = workLogExpandedOverrides[turn.key],
+                                collapseAllSignal = collapseAllSignal,
+                                onToggleWorkLog = { next -> workLogExpandedOverrides[turn.key] = next },
+                                onLongPressTurn = { target -> assistantMenuTarget = target },
                                 fetchedMediaPaths = fetchedMediaPaths,
                                 onCopyText = onCopyText,
                                 onQuote = { author, excerpt -> onQuoteMessage(author, excerpt) },
@@ -1702,7 +1722,6 @@ private fun ChatView(
     }
 
     bubbleMenuText?.let { targetText ->
-        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
         val actions = listOf(
             Triple(Icons.Rounded.ContentCopy, "复制消息") {
                 bubbleMenuText = null
@@ -1717,51 +1736,125 @@ private fun ChatView(
                 onReeditMessage(targetText)
             },
         )
-        ModalBottomSheet(
-            onDismissRequest = { bubbleMenuText = null },
-            sheetState = sheetState,
-            containerColor = MaterialTheme.colorScheme.surface,
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .padding(bottom = 12.dp),
-            ) {
-                Text(
-                    text = summarizeExcerpt(targetText),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+        ChatTurnActionSheet(
+            headerText = summarizeExcerpt(targetText),
+            actions = actions,
+            onDismiss = { bubbleMenuText = null },
+        )
+    }
+
+    assistantMenuTarget?.let { target ->
+        val actions = buildList<Triple<ImageVector, String, () -> Unit>> {
+            if (target.hasWorkLog) {
+                if (target.workLogExpanded) {
+                    add(
+                        Triple(Icons.Rounded.UnfoldLess, "收拢当前调用链路") {
+                            assistantMenuTarget = null
+                            workLogExpandedOverrides[target.turnKey] = false
+                        },
+                    )
+                } else {
+                    add(
+                        Triple(Icons.Rounded.UnfoldMore, "展开当前调用链路") {
+                            assistantMenuTarget = null
+                            workLogExpandedOverrides[target.turnKey] = true
+                        },
+                    )
+                }
+            }
+            if (anyAssistantHasWorkLog) {
+                add(
+                    Triple(Icons.Rounded.ExpandLess, "收拢全部调用链路") {
+                        assistantMenuTarget = null
+                        turns.filterIsInstance<ChatTurn.Assistant>().forEach { t ->
+                            workLogExpandedOverrides[t.key] = false
+                        }
+                        collapseAllSignal++
+                    },
                 )
-                actions.forEach { (icon, label, action) ->
-                    HairlineDivider()
-                    Surface(
-                        onClick = action,
-                        color = MaterialTheme.colorScheme.surface,
+            }
+            if (target.plainText.isNotBlank()) {
+                add(
+                    Triple(Icons.Rounded.ContentCopy, "复制回复") {
+                        assistantMenuTarget = null
+                        onCopyText(target.plainText, "回复")
+                    },
+                )
+                add(
+                    Triple(Icons.Rounded.FormatQuote, "引用回复") {
+                        assistantMenuTarget = null
+                        onQuoteMessage(target.authorLabel, summarizeExcerpt(target.plainText))
+                    },
+                )
+            }
+        }
+        if (actions.isNotEmpty()) {
+            val previewHeader = if (target.plainText.isNotBlank()) {
+                "${target.authorLabel} · ${summarizeExcerpt(target.plainText)}"
+            } else {
+                target.authorLabel
+            }
+            ChatTurnActionSheet(
+                headerText = previewHeader,
+                actions = actions,
+                onDismiss = { assistantMenuTarget = null },
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChatTurnActionSheet(
+    headerText: String,
+    actions: List<Triple<ImageVector, String, () -> Unit>>,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(bottom = 12.dp),
+        ) {
+            Text(
+                text = headerText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+            )
+            actions.forEach { (icon, label, action) ->
+                HairlineDivider()
+                Surface(
+                    onClick = action,
+                    color = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 52.dp),
+                ) {
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .defaultMinSize(minHeight = 52.dp),
+                            .padding(horizontal = 20.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 20.dp, vertical = 14.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(14.dp),
-                        ) {
-                            Icon(
-                                imageVector = icon,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Text(
-                                text = label,
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                        }
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
                     }
                 }
             }
@@ -1769,11 +1862,24 @@ private fun ChatView(
     }
 }
 
+private data class AssistantTurnMenuTarget(
+    val turnKey: String,
+    val authorLabel: String,
+    val plainText: String,
+    val hasWorkLog: Boolean,
+    val workLogExpanded: Boolean,
+)
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ModernAssistantTurn(
     tool: String,
     turn: ChatTurn.Assistant,
     liveDraft: StreamingMessageState? = null,
+    workLogExpandedOverride: Boolean? = null,
+    collapseAllSignal: Int = 0,
+    onToggleWorkLog: (Boolean) -> Unit = {},
+    onLongPressTurn: (AssistantTurnMenuTarget) -> Unit = {},
     fetchedMediaPaths: Map<String, String>,
     onCopyText: (String, String) -> Unit,
     onQuote: (String, String) -> Unit,
@@ -1782,6 +1888,7 @@ private fun ModernAssistantTurn(
     onOpenVideo: (UiPart.Media) -> Unit,
     onSelectQuestionOption: ((optionIndex: Int, optionLabel: String, isSingleSelect: Boolean) -> Unit)? = null,
 ) {
+    val haptic = LocalHapticFeedback.current
     val plainText = remember(turn.textBlocks) { turn.textBlocks.joinToString("\n\n") }
     val authorLabel = turn.model?.takeIf { it.isNotBlank() }
         ?: liveDraft?.model?.takeIf { it.isNotBlank() }
@@ -1796,12 +1903,35 @@ private fun ModernAssistantTurn(
         turn.thinkingBlocks.isNotEmpty() ||
         turn.activities.isNotEmpty() ||
         !liveDraft?.thinking.isNullOrBlank()
+    val isWorkLogRunning = (liveDraft?.active == true) || remember(turn.activities) {
+        turn.activities.any { it.isRunning }
+    }
+    val workLogExpanded = workLogExpandedOverride ?: isWorkLogRunning
+    val triggerLongPress: () -> Unit = {
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        onLongPressTurn(
+            AssistantTurnMenuTarget(
+                turnKey = turn.key,
+                authorLabel = authorLabel,
+                plainText = plainText,
+                hasWorkLog = hasWorkLog,
+                workLogExpanded = workLogExpanded,
+            ),
+        )
+    }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .combinedClickable(
+                    onClick = {},
+                    onLongClick = triggerLongPress,
+                ),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -1839,6 +1969,10 @@ private fun ModernAssistantTurn(
                 activities = turn.activities,
                 timeline = turn.timeline,
                 liveDraft = liveDraft,
+                expanded = workLogExpanded,
+                collapseAllSignal = collapseAllSignal,
+                onToggleExpanded = onToggleWorkLog,
+                onLongPress = triggerLongPress,
                 onCopyText = onCopyText,
             )
         }
@@ -2023,12 +2157,17 @@ private fun InteractiveQuestionCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun TurnWorkLogCard(
     thinkingBlocks: List<String>,
     activities: List<TranslatedToolActivity>,
     timeline: List<TurnWorkStep> = emptyList(),
     liveDraft: StreamingMessageState? = null,
+    expanded: Boolean,
+    collapseAllSignal: Int = 0,
+    onToggleExpanded: (Boolean) -> Unit,
+    onLongPress: () -> Unit = {},
     onCopyText: (String, String) -> Unit,
 ) {
     val extras = SidekickThemeExtras.colors
@@ -2047,8 +2186,7 @@ private fun TurnWorkLogCard(
     val totalRemoved = remember(activities) { activities.sumOf { it.removedLines } }
     val hasError = remember(activities) { activities.any { it.isError } }
     val isRunning = liveActive || remember(activities) { activities.any { it.isRunning } }
-    var userExpandedOverride by remember { mutableStateOf<Boolean?>(null) }
-    val expanded = userExpandedOverride ?: isRunning
+    val showBottomCollapse = timeline.size >= 4 || activities.size >= 4
 
     Surface(
         modifier = Modifier
@@ -2063,7 +2201,10 @@ private fun TurnWorkLogCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .defaultMinSize(minHeight = 48.dp)
-                    .clickable { userExpandedOverride = !expanded }
+                    .combinedClickable(
+                        onClick = { onToggleExpanded(!expanded) },
+                        onLongClick = onLongPress,
+                    )
                     .padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -2156,6 +2297,9 @@ private fun TurnWorkLogCard(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .pointerInput(onLongPress) {
+                            detectTapGestures(onLongPress = { onLongPress() })
+                        }
                         .padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
@@ -2178,6 +2322,8 @@ private fun TurnWorkLogCard(
                                 )
                                 is TurnWorkStep.Activity -> WorkLogActivityRow(
                                     activity = step.activity,
+                                    collapseAllSignal = collapseAllSignal,
+                                    onLongPress = onLongPress,
                                     onCopyText = onCopyText,
                                 )
                             }
@@ -2192,6 +2338,8 @@ private fun TurnWorkLogCard(
                         activities.forEach { act ->
                             WorkLogActivityRow(
                                 activity = act,
+                                collapseAllSignal = collapseAllSignal,
+                                onLongPress = onLongPress,
                                 onCopyText = onCopyText,
                             )
                         }
@@ -2203,18 +2351,50 @@ private fun TurnWorkLogCard(
                             modifier = Modifier.testTag("streaming_thinking_box"),
                         )
                     }
+                    if (showBottomCollapse) {
+                        HairlineDivider()
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 48.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .combinedClickable(
+                                    onClick = { onToggleExpanded(false) },
+                                    onLongClick = onLongPress,
+                                )
+                                .testTag("turn_work_log_bottom_collapse"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.ExpandLess,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = "收起调用链路",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun WorkLogActivityRow(
     activity: TranslatedToolActivity,
+    collapseAllSignal: Int = 0,
+    onLongPress: () -> Unit = {},
     onCopyText: (String, String) -> Unit,
 ) {
-    var expanded by remember { mutableStateOf(false) }
+    var expanded by remember(collapseAllSignal) { mutableStateOf(false) }
     val extras = SidekickThemeExtras.colors
     val hasDetail = activity.detailInput.isNotBlank() || activity.detailDiff.isNotBlank() || activity.detailOutput.isNotBlank()
     val showLivePreview = activity.isRunning && !expanded && (activity.detailInput.isNotBlank() || activity.detailOutput.isNotBlank())
@@ -2239,7 +2419,10 @@ private fun WorkLogActivityRow(
                 .fillMaxWidth()
                 .defaultMinSize(minHeight = 48.dp)
                 .clip(RoundedCornerShape(8.dp))
-                .clickable(enabled = hasDetail) { expanded = !expanded }
+                .combinedClickable(
+                    onClick = { if (hasDetail) expanded = !expanded },
+                    onLongClick = onLongPress,
+                )
                 .padding(horizontal = 6.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),

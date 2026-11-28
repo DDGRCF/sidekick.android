@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
@@ -507,66 +508,81 @@ fun DockedApprovalCard(
     modifier: Modifier = Modifier,
 ) {
     val extras = SidekickThemeExtras.colors
+    val title = request.title.ifBlank { "请求执行工具" }
+    var detailExpanded by rememberSaveable(request.requestId) { mutableStateOf(false) }
+    val showToolTag = request.toolName.isNotBlank() &&
+        !title.contains(request.toolName, ignoreCase = true)
+
     Surface(
         modifier = modifier
             .fillMaxWidth()
             .testTag("pending_approval_card"),
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        border = BorderStroke(1.dp, extras.warning),
-        shadowElevation = 3.dp,
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(0.5.dp, extras.hairline),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 Icon(
-                    imageVector = Icons.Rounded.Build,
+                    imageVector = Icons.Rounded.Shield,
                     contentDescription = null,
                     tint = extras.warning,
-                    modifier = Modifier.size(18.dp),
+                    modifier = Modifier.size(15.dp),
                 )
                 Text(
-                    text = request.title.ifBlank { "请求执行工具" },
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                    text = title,
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
                     color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                if (request.toolName.isNotBlank()) {
-                    Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = extras.warningContainer,
-                    ) {
-                        Text(
-                            text = request.toolName,
-                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                            color = extras.onWarningContainer,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                        )
-                    }
+                if (showToolTag) {
+                    Text(
+                        text = request.toolName,
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
                 }
             }
             if (request.detail.isNotBlank()) {
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerLowest,
+                val scrollModifier = if (detailExpanded) {
+                    Modifier
+                        .heightIn(max = 120.dp)
+                        .verticalScroll(rememberScrollState())
+                } else {
+                    Modifier
+                }
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 120.dp),
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+                        .clickable { detailExpanded = !detailExpanded }
+                        .padding(horizontal = 8.dp, vertical = 5.dp),
                 ) {
                     Text(
                         text = request.detail,
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp,
+                        ),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = if (detailExpanded) Int.MAX_VALUE else 2,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier
-                            .verticalScroll(rememberScrollState())
-                            .padding(10.dp),
+                            .fillMaxWidth()
+                            .then(scrollModifier),
                     )
                 }
             }
@@ -574,25 +590,36 @@ fun DockedApprovalCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Button(
+                FilledTonalButton(
                     onClick = { onDecision("accept") },
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                     modifier = Modifier.defaultMinSize(minHeight = 48.dp),
                 ) {
-                    Text("允许一次")
+                    Text("允许一次", style = MaterialTheme.typography.labelMedium)
                 }
-                OutlinedButton(
+                TextButton(
                     onClick = { onDecision("acceptForSession") },
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                     modifier = Modifier.defaultMinSize(minHeight = 48.dp),
                 ) {
-                    Text("本会话允许")
+                    Text("本会话允许", style = MaterialTheme.typography.labelMedium)
                 }
-                OutlinedButton(
+                TextButton(
                     onClick = { onDecision("decline") },
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                     modifier = Modifier.defaultMinSize(minHeight = 48.dp),
                 ) {
-                    Text("拒绝", color = MaterialTheme.colorScheme.error)
+                    Text(
+                        text = "拒绝",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
                 }
             }
         }

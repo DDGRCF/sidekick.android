@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Upper-Left Primary Monolith (Host / Editor blade, ample margin inside 66dp safe circle) -->
+    <path android:pathData="M32.5,32.5 L60.5,32.5 L54,42 L42,42 L42,63.5 L32.5,71 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="32.5"
+                android:startY="32.5"
+                android:endX="57"
+                android:endY="71"
+                android:type="linear">
+                <item android:offset="0" android:color="#FFF3F7FB" />
+                <item android:offset="1" android:color="#FFB8C7D9" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Crisp top-left machined specular bevel on Host blade -->
+    <path
+        android:pathData="M33.1,33.1 L59.6,33.1 M33.1,33.1 L33.1,70"
+        android:strokeColor="#55FFFFFF"
+        android:strokeWidth="0.9"
+        android:strokeLineCap="round" />
+
+    <!-- Lower-Right Companion Monolith (Sidekick emerald blade, counter-balanced) -->
+    <path android:pathData="M75.5,75.5 L47.5,75.5 L54,66 L66,66 L66,44.5 L75.5,37 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="52"
+                android:startY="37"
+                android:endX="75.5"
+                android:endY="75.5"
+                android:type="linear">
+                <item android:offset="0" android:color="#FF34D399" />
+                <item android:offset="1" android:color="#FF059669" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Subtle inner highlight notch on Companion blade -->
+    <path
+        android:pathData="M54.3,65.6 L65.6,65.6 L65.6,44.8 L74.9,37.6"
+        android:strokeColor="#80A7F3D0"
+        android:strokeWidth="0.85"
+        android:strokeLineJoin="round" />
+
+    <!-- Central Cipher-Relay Diamond (faceted split) -->
+    <path
+        android:fillColor="#FFA7F3D0"
+        android:pathData="M54,47.5 L60.5,54 L47.5,54 Z" />
+    <path
+        android:fillColor="#FF34D399"
+        android:pathData="M47.5,54 L60.5,54 L54,60.5 Z" />
+</vector>

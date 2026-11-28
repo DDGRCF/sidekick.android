@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -5,6 +7,34 @@ plugins {
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
 }
+
+val releaseSigningPropsFile = listOfNotNull(
+    System.getenv("SIDEKICK_SIGNING_PROPS")?.takeIf { it.isNotBlank() }?.let(::File),
+    rootProject.file("keystore.properties"),
+    File(System.getProperty("user.home"), ".config/sidekick-android/signing.properties"),
+).firstOrNull { it.isFile }
+
+val releaseSigningProps = Properties().apply {
+    releaseSigningPropsFile?.inputStream()?.use(::load)
+}
+
+val releaseStoreFilePath = System.getenv("SIDEKICK_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
+    ?: releaseSigningProps.getProperty("storeFile")
+val releaseStorePassword = System.getenv("SIDEKICK_KEYSTORE_PASSWORD")?.takeIf { it.isNotBlank() }
+    ?: releaseSigningProps.getProperty("storePassword")
+val releaseKeyAlias = System.getenv("SIDEKICK_KEY_ALIAS")?.takeIf { it.isNotBlank() }
+    ?: releaseSigningProps.getProperty("keyAlias")
+val releaseKeyPassword = System.getenv("SIDEKICK_KEY_PASSWORD")?.takeIf { it.isNotBlank() }
+    ?: releaseSigningProps.getProperty("keyPassword")
+
+val releaseKeystoreFile = releaseStoreFilePath
+    ?.takeIf { it.isNotBlank() }
+    ?.let { path -> File(path).let { if (it.isAbsolute) it else rootProject.file(path) } }
+
+val hasReleaseSigning = releaseKeystoreFile?.isFile == true &&
+    !releaseStorePassword.isNullOrBlank() &&
+    !releaseKeyAlias.isNullOrBlank() &&
+    !releaseKeyPassword.isNullOrBlank()
 
 android {
     namespace = "dev.ddgrcf.sidekick"
@@ -18,9 +48,55 @@ android {
         applicationId = "dev.ddgrcf.sidekick"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = providers.gradleProperty("versionCode").orNull?.toIntOrNull() ?: 1
+        versionName = providers.gradleProperty("versionName").orNull ?: "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = releaseKeystoreFile
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            ndk {
+                abiFilters += listOf("arm64-v8a")
+            }
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+    }
+
+    androidResources {
+        localeFilters += listOf("zh", "en")
+    }
+
+    packaging {
+        resources {
+            excludes += setOf(
+                "META-INF/AL2.0",
+                "META-INF/LGPL2.1",
+                "META-INF/*.version",
+                "DebugProbesKt.bin",
+                "kotlin-tooling-metadata.json",
+                "org/bouncycastle/pqc/**",
+                "META-INF/versions/9/OSGI-INF/**",
+            )
+        }
     }
 
     buildFeatures {

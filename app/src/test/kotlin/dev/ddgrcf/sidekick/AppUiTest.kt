@@ -17,8 +17,10 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
@@ -1860,5 +1862,110 @@ class AppUiTest {
         assertTrue(tookOver)
         composeRule.onNodeWithText("返回列表").assertIsDisplayed().performClick()
         assertTrue(wentBack)
+    }
+
+    @Test
+    fun assistantWorkLogLongPressCollapsesCurrentAndAllChains() {
+        val parts = mapOf(
+            "a1" to listOf(
+                UiPart.Thinking("第1轮思考"),
+                UiPart.ToolCall("c1", "read_file", """{"Path":"/repo/A.kt"}""", "TOOL_CALL_STATUS_COMPLETED"),
+                UiPart.ToolCall("c2", "read_file", """{"Path":"/repo/B.kt"}""", "TOOL_CALL_STATUS_COMPLETED"),
+                UiPart.ToolCall("c3", "read_file", """{"Path":"/repo/C.kt"}""", "TOOL_CALL_STATUS_COMPLETED"),
+                UiPart.ToolCall("c4", "bash", """{"command":"echo ok"}""", "TOOL_CALL_STATUS_COMPLETED"),
+                UiPart.Text("第1轮完成"),
+            ),
+            "t1" to listOf(
+                UiPart.ToolResult("c1", "A", isError = false, truncated = false),
+                UiPart.ToolResult("c2", "B", isError = false, truncated = false),
+                UiPart.ToolResult("c3", "C", isError = false, truncated = false),
+                UiPart.ToolResult("c4", "ok", isError = false, truncated = false),
+            ),
+            "u2" to listOf(UiPart.Text("继续检查")),
+            "a2" to listOf(
+                UiPart.Thinking("第2轮思考"),
+                UiPart.ToolCall("c5", "bash", """{"command":"git status"}""", "TOOL_CALL_STATUS_COMPLETED"),
+                UiPart.Text("第2轮完成"),
+            ),
+            "t2" to listOf(
+                UiPart.ToolResult("c5", "clean", isError = false, truncated = false),
+            ),
+        )
+        composeRule.setContent {
+            SidekickTheme(darkTheme = false) {
+                SessionContent(
+                    title = "pi rpc",
+                    tool = "pi",
+                    structuredHistory = true,
+                    isRpcSession = true,
+                    live = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = listOf(
+                        MessageEntity("b1", "c1", 1, "ROLE_ASSISTANT", "a1", 1L, "deepseek-v4.1"),
+                        MessageEntity("b1", "c1", 2, "ROLE_TOOL", "t1", 2L, null),
+                        MessageEntity("b1", "c1", 3, "ROLE_USER", "u2", 3L, null),
+                        MessageEntity("b1", "c1", 4, "ROLE_ASSISTANT", "a2", 4L, "deepseek-v4.1"),
+                        MessageEntity("b1", "c1", 5, "ROLE_TOOL", "t2", 5L, null),
+                    ),
+                    streamingDraft = StreamingMessageState(active = false),
+                    decodeParts = { parts[it].orEmpty() },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { _, _ -> },
+                    onSendKey = {},
+                    onFocusChanged = {},
+                )
+            }
+        }
+        composeRule.mainClock.advanceTimeBy(2600L)
+        composeRule.waitForIdle()
+
+        // Scroll to turn 1 (index 0) -> expand -> verify bottom collapse footer & single-chain collapse.
+        composeRule.onNodeWithTag("chat_list").performScrollToIndex(0)
+        composeRule.waitForIdle()
+        composeRule.onAllNodesWithTag("turn_work_log_card")[0].performClick()
+        composeRule.mainClock.advanceTimeBy(500L)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("第1轮思考").assertIsDisplayed()
+        composeRule.onNodeWithTag("turn_work_log_bottom_collapse").assertExists()
+
+        composeRule.onNodeWithText("A.kt").performTouchInput { longClick() }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("收拢当前调用链路").assertIsDisplayed()
+        composeRule.onNodeWithText("收拢全部调用链路").assertIsDisplayed()
+        composeRule.onNodeWithText("收拢当前调用链路").performClick()
+        composeRule.mainClock.advanceTimeBy(500L)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("第1轮思考").assertDoesNotExist()
+
+        // Expand turn 2 (index 2) and turn 1 (index 0) together, then collapse all chains.
+        composeRule.onNodeWithTag("chat_list").performScrollToIndex(2)
+        composeRule.waitForIdle()
+        composeRule.onAllNodesWithTag("turn_work_log_card").onLast().performClick()
+        composeRule.mainClock.advanceTimeBy(500L)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("第2轮思考").assertIsDisplayed()
+
+        composeRule.onNodeWithTag("chat_list").performScrollToIndex(0)
+        composeRule.waitForIdle()
+        composeRule.onAllNodesWithTag("turn_work_log_card")[0].performClick()
+        composeRule.mainClock.advanceTimeBy(500L)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("第1轮思考").assertIsDisplayed()
+
+        composeRule.onNodeWithText("A.kt").performTouchInput { longClick() }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("收拢全部调用链路").assertIsDisplayed().performClick()
+        composeRule.mainClock.advanceTimeBy(500L)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("第1轮思考").assertDoesNotExist()
+
+        composeRule.onNodeWithTag("chat_list").performScrollToIndex(2)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("第2轮思考").assertDoesNotExist()
     }
 }
