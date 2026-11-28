@@ -882,7 +882,7 @@ private fun StartSessionSheet(
             item {
                 Text("新建会话", style = MaterialTheme.typography.titleLarge)
                 Spacer(Modifier.height(14.dp))
-                SectionHeader("选择 Tool", modifier = Modifier.padding(bottom = 6.dp))
+                SectionHeader("选择 Agent", modifier = Modifier.padding(bottom = 6.dp))
                 HairlineDivider()
             }
             itemsIndexed(tools, key = { _, t -> t.name }) { idx, t ->

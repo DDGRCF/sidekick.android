@@ -1,6 +1,7 @@
 package dev.ddgrcf.sidekick.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -20,6 +22,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -43,6 +46,7 @@ import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -64,6 +68,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
@@ -105,18 +111,17 @@ fun ComposerConfigPill(
     }
     val nonDefaultMode = config.runtimeMode != RuntimeModeUi.APPROVAL_REQUIRED &&
         config.runtimeMode != RuntimeModeUi.UNSPECIFIED
-    Surface(
-        onClick = onClick,
+    Box(
         modifier = modifier
             .defaultMinSize(minHeight = 48.dp)
             .widthIn(max = 210.dp)
-            .testTag("composer_config_pill"),
-        shape = RoundedCornerShape(999.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .testTag("composer_config_pill")
+            .padding(horizontal = 6.dp),
+        contentAlignment = Alignment.Center,
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
@@ -259,7 +264,7 @@ fun SessionSettingsBottomSheet(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 420.dp)
+                    .weight(1f, fill = false)
                     .testTag("session_settings_sheet"),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
@@ -267,7 +272,7 @@ fun SessionSettingsBottomSheet(
                 item(key = "thinking") {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            text = "思考强度 (Thinking / Effort)",
+                            text = "思考强度",
                             style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
                             color = MaterialTheme.colorScheme.onSurface,
                         )
@@ -362,60 +367,60 @@ fun SessionSettingsBottomSheet(
                         )
                     }
                 } else {
-                    items(filteredModels, key = { "model-${it.id}" }) { m ->
+                    itemsIndexed(filteredModels, key = { _, m -> "model-${m.id}" }) { idx, m ->
                         val isSelected = isModelSelected(m)
-                        Surface(
-                            onClick = { onSelectModel(m.id) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .defaultMinSize(minHeight = 48.dp)
-                                .testTag("settings_sheet_model_item"),
-                            shape = RoundedCornerShape(10.dp),
-                            color = if (isSelected) {
-                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
-                            } else {
-                                MaterialTheme.colorScheme.surfaceContainerLow
-                            },
-                            border = BorderStroke(
-                                width = if (isSelected) 1.dp else 0.5.dp,
-                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
-                            ),
-                        ) {
-                            Row(
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Surface(
+                                onClick = { onSelectModel(m.id) },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .testTag("settings_sheet_model_item"),
+                                color = if (isSelected) {
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
+                                } else {
+                                    Color.Transparent
+                                },
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = m.name.ifBlank { m.id },
-                                        style = MaterialTheme.typography.bodyMedium.copy(
-                                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                                        ),
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    if (m.provider.isNotBlank() || m.id != m.name) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 4.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = listOf(m.provider, m.id).filter { it.isNotBlank() }.joinToString(" · "),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            text = m.name.ifBlank { m.id },
+                                            style = MaterialTheme.typography.bodyMedium.copy(
+                                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                            ),
+                                            color = MaterialTheme.colorScheme.onSurface,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
                                         )
+                                        if (m.provider.isNotBlank() || m.id != m.name) {
+                                            Text(
+                                                text = listOf(m.provider, m.id).filter { it.isNotBlank() }.joinToString(" · "),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                    }
+                                    if (isSelected) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Check,
+                                            contentDescription = "当前模型",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(18.dp),
+                                        )
                                     }
                                 }
-                                if (isSelected) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Check,
-                                        contentDescription = "当前模型",
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                }
+                            }
+                            if (idx < filteredModels.lastIndex) {
+                                HairlineDivider()
                             }
                         }
                     }
@@ -442,50 +447,51 @@ fun SessionSettingsBottomSheet(
                 }
             }
 
-            items(runtimeModes.filter { it != RuntimeModeUi.UNSPECIFIED }, key = { "mode-${it.name}" }) { mode ->
+            val visibleModes = runtimeModes.filter { it != RuntimeModeUi.UNSPECIFIED }
+            itemsIndexed(visibleModes, key = { _, m -> "mode-${m.name}" }) { idx, mode ->
                 val isSelected = config.runtimeMode == mode
-                Surface(
-                    onClick = { onSelectRuntimeMode(mode) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 48.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    color = if (isSelected) {
-                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
-                    } else {
-                        MaterialTheme.colorScheme.surfaceContainerLow
-                    },
-                    border = BorderStroke(
-                        width = if (isSelected) 1.dp else 0.5.dp,
-                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
-                    ),
-                ) {
-                    Row(
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Surface(
+                        onClick = { onSelectRuntimeMode(mode) },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                            .defaultMinSize(minHeight = 48.dp),
+                        color = if (isSelected) {
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
+                        } else {
+                            Color.Transparent
+                        },
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = mode.label,
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                            Text(
-                                text = mode.description,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 4.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = mode.label,
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                Text(
+                                    text = mode.description,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            if (isSelected) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Check,
+                                    contentDescription = "已选模式",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
                         }
-                        if (isSelected) {
-                            Icon(
-                                imageVector = Icons.Rounded.Check,
-                                contentDescription = "已选模式",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        }
+                    }
+                    if (idx < visibleModes.lastIndex) {
+                        HairlineDivider()
                     }
                 }
             }
@@ -823,118 +829,145 @@ fun SidekickContextBar(
         }
     }
 
-    Row(
+    val showGit = workspaceContext != null &&
+        (workspaceContext.gitBranch.isNotBlank() || workspaceContext.changedFiles.isNotEmpty() || workspaceContext.cwd.isNotBlank())
+    val showNvim = workspaceContext != null && workspaceContext.nvimConnected
+    val showTimer = turnStartedMs != null
+    if (!showGit && !showNvim && !showTimer) return
+
+    Surface(
         modifier = modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
             .testTag("sidekick_context_bar"),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(0.5.dp, extras.hairline),
     ) {
-        if (workspaceContext != null && (workspaceContext.gitBranch.isNotBlank() || workspaceContext.changedFiles.isNotEmpty() || workspaceContext.cwd.isNotBlank())) {
-            val branch = workspaceContext.gitBranch.ifBlank { workspaceContext.cwd.substringAfterLast('/').ifBlank { "workspace" } }
-            val count = workspaceContext.changedFiles.size
-            val label = if (count > 0) "$branch · $count 改动" else branch
-            Surface(
-                onClick = onOpenDiff,
-                modifier = Modifier
-                    .defaultMinSize(minHeight = 48.dp)
-                    .testTag("context_bar_git_pill"),
-                shape = RoundedCornerShape(999.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
-                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (showGit) {
+                val branch = workspaceContext.gitBranch.ifBlank { workspaceContext.cwd.substringAfterLast('/').ifBlank { "workspace" } }
+                val count = workspaceContext.changedFiles.size
+                val label = if (count > 0) "$branch · $count 改动" else branch
+                Box(
+                    modifier = Modifier
+                        .defaultMinSize(minHeight = 48.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(onClick = onOpenDiff)
+                        .testTag("context_bar_git_pill")
+                        .padding(horizontal = 8.dp),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Edit,
-                        contentDescription = null,
-                        tint = if (count > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(14.dp),
-                    )
-                    Text(
-                        text = label,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Edit,
+                            contentDescription = null,
+                            tint = if (count > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(13.dp),
+                        )
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
-        }
 
-        if (workspaceContext != null && workspaceContext.nvimConnected) {
-            val filePart = workspaceContext.nvimFile.substringAfterLast('/').ifBlank { "已连接" }
-            val linePart = if (workspaceContext.nvimLine > 0 && workspaceContext.nvimFile.isNotBlank()) ":${workspaceContext.nvimLine}" else ""
-            val errCount = remember(workspaceContext.diagnostics) {
-                workspaceContext.diagnostics.count { it.severity.equals("error", ignoreCase = true) }
+            if (showGit && showNvim) {
+                Box(
+                    modifier = Modifier
+                        .height(14.dp)
+                        .width(0.5.dp)
+                        .background(extras.hairline),
+                )
             }
-            val nvimLabel = buildString {
-                append("Neovim · ")
-                append(filePart)
-                append(linePart)
-                if (errCount > 0) append(" · $errCount 错误")
-            }
-            Surface(
-                onClick = onOpenNvim,
-                modifier = Modifier
-                    .defaultMinSize(minHeight = 48.dp)
-                    .testTag("context_bar_nvim_pill"),
-                shape = RoundedCornerShape(999.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
-                border = BorderStroke(0.5.dp, if (errCount > 0) MaterialTheme.colorScheme.error else extras.success),
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+
+            if (showNvim) {
+                val filePart = workspaceContext.nvimFile.substringAfterLast('/').ifBlank { "已连接" }
+                val linePart = if (workspaceContext.nvimLine > 0 && workspaceContext.nvimFile.isNotBlank()) ":${workspaceContext.nvimLine}" else ""
+                val errCount = remember(workspaceContext.diagnostics) {
+                    workspaceContext.diagnostics.count { it.severity.equals("error", ignoreCase = true) }
+                }
+                val nvimLabel = buildString {
+                    append("Neovim · ")
+                    append(filePart)
+                    append(linePart)
+                    if (errCount > 0) append(" · $errCount 错误")
+                }
+                Box(
+                    modifier = Modifier
+                        .defaultMinSize(minHeight = 48.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(onClick = onOpenNvim)
+                        .testTag("context_bar_nvim_pill")
+                        .padding(horizontal = 8.dp),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Icon(
-                        imageVector = if (errCount > 0) Icons.Rounded.ErrorOutline else Icons.Rounded.Code,
-                        contentDescription = null,
-                        tint = if (errCount > 0) MaterialTheme.colorScheme.error else extras.success,
-                        modifier = Modifier.size(14.dp),
-                    )
-                    Text(
-                        text = nvimLabel,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        Icon(
+                            imageVector = if (errCount > 0) Icons.Rounded.ErrorOutline else Icons.Rounded.Code,
+                            contentDescription = null,
+                            tint = if (errCount > 0) MaterialTheme.colorScheme.error else extras.success,
+                            modifier = Modifier.size(13.dp),
+                        )
+                        Text(
+                            text = nvimLabel,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (errCount > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
-        }
 
-        if (turnStartedMs != null) {
-            val secs = ((nowMs - turnStartedMs).coerceAtLeast(0L) / 1000L)
-            Surface(
-                modifier = Modifier
-                    .defaultMinSize(minHeight = 48.dp)
-                    .testTag("context_bar_timer_pill"),
-                shape = RoundedCornerShape(999.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
-                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+            if (showTimer) {
+                if (showGit || showNvim) {
+                    Box(
+                        modifier = Modifier
+                            .height(14.dp)
+                            .width(0.5.dp)
+                            .background(extras.hairline),
+                    )
+                }
+                val secs = ((nowMs - turnStartedMs).coerceAtLeast(0L) / 1000L)
+                Box(
+                    modifier = Modifier
+                        .defaultMinSize(minHeight = 48.dp)
+                        .testTag("context_bar_timer_pill")
+                        .padding(horizontal = 8.dp),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Schedule,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(14.dp),
-                    )
-                    Text(
-                        text = "${secs}s",
-                        style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
-                        color = MaterialTheme.colorScheme.primary,
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Schedule,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(13.dp),
+                        )
+                        Text(
+                            text = "${secs}s",
+                            style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
                 }
             }
         }
@@ -1055,9 +1088,9 @@ fun WorkspaceDiffSheet(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 460.dp)
+                    .weight(1f, fill = false)
                     .testTag("workspace_diff_sheet"),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 if (workspaceContext.changedFiles.isEmpty()) {
                     item(key = "empty") {
@@ -1068,65 +1101,59 @@ fun WorkspaceDiffSheet(
                         )
                     }
                 } else {
-                    for (f in workspaceContext.changedFiles) {
+                    workspaceContext.changedFiles.forEachIndexed { idx, f ->
                         val fileDiff = parsedByFile[f.path]
                         val isExpanded = expandedFile == f.path
                         item(key = "file-${f.path}") {
-                            Surface(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .defaultMinSize(minHeight = 48.dp)
-                                    .clickable {
-                                        expandedFile = if (isExpanded) null else f.path
-                                    }
-                                    .testTag("diff_file_row_${f.path}"),
-                                shape = RoundedCornerShape(10.dp),
-                                color = if (isExpanded) {
-                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
-                                } else {
-                                    MaterialTheme.colorScheme.surfaceContainerLow
-                                },
-                                border = BorderStroke(
-                                    width = if (isExpanded) 1.dp else 0.5.dp,
-                                    color = if (isExpanded) primaryColor else MaterialTheme.colorScheme.outlineVariant,
-                                ),
-                            ) {
-                                Row(
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Surface(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        .defaultMinSize(minHeight = 48.dp)
+                                        .clickable {
+                                            expandedFile = if (isExpanded) null else f.path
+                                        }
+                                        .testTag("diff_file_row_${f.path}"),
+                                    color = if (isExpanded) {
+                                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.24f)
+                                    } else {
+                                        Color.Transparent
+                                    },
                                 ) {
-                                    Text(
-                                        text = f.status,
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontFamily = FontFamily.Monospace,
-                                            fontWeight = FontWeight.Bold,
-                                        ),
-                                        color = primaryColor,
-                                    )
-                                    Text(
-                                        text = f.path,
-                                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                    if (f.added > 0 || f.removed > 0) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 4.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
                                         Text(
-                                            text = "+${f.added} -${f.removed}",
-                                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                                            color = extras.success,
+                                            text = f.status,
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontFamily = FontFamily.Monospace,
+                                                fontWeight = FontWeight.Bold,
+                                            ),
+                                            color = primaryColor,
+                                        )
+                                        Text(
+                                            text = f.path,
+                                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        DiffStatText(added = f.added, removed = f.removed)
+                                        Icon(
+                                            imageVector = if (isExpanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                                            contentDescription = if (isExpanded) "收起文件 Diff" else "展开文件 Diff",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(18.dp),
                                         )
                                     }
-                                    Icon(
-                                        imageVector = if (isExpanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                                        contentDescription = if (isExpanded) "收起文件 Diff" else "展开文件 Diff",
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(18.dp),
-                                    )
+                                }
+                                if (idx < workspaceContext.changedFiles.lastIndex && !isExpanded) {
+                                    HairlineDivider()
                                 }
                             }
                         }
@@ -1192,6 +1219,7 @@ fun NvimContextSheet(
     workspaceContext: WorkspaceContextUi,
     onRefresh: () -> Unit,
     onInsertSnippet: (kind: String) -> Unit,
+    onOpenInNvim: (() -> Unit)? = null,
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -1246,6 +1274,17 @@ fun NvimContextSheet(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                if (onOpenInNvim != null) {
+                    FilledTonalButton(
+                        onClick = {
+                            onDismiss()
+                            onOpenInNvim()
+                        },
+                        modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                    ) {
+                        Text("在 Neovim 打开当前会话")
+                    }
+                }
                 if (workspaceContext.nvimFile.isNotBlank()) {
                     OutlinedButton(
                         onClick = {
@@ -1284,9 +1323,9 @@ fun NvimContextSheet(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 360.dp)
+                    .weight(1f, fill = false)
                     .testTag("nvim_context_sheet"),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 if (workspaceContext.openBuffers.isNotEmpty()) {
                     item(key = "buffers-hdr") {
@@ -1323,30 +1362,26 @@ fun NvimContextSheet(
                             color = MaterialTheme.colorScheme.onSurface,
                         )
                     }
-                    items(workspaceContext.diagnostics, key = { "diag-${it.file}-${it.line}-${it.col}-${it.message.hashCode()}" }) { d ->
-                        Surface(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerLow,
-                            border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+                    itemsIndexed(workspaceContext.diagnostics, key = { idx, d -> "diag-$idx-${d.file}-${d.line}-${d.col}" }) { idx, d ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 4.dp, vertical = 6.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
                         ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                                verticalArrangement = Arrangement.spacedBy(2.dp),
-                            ) {
-                                Text(
-                                    text = "${d.file}:${d.line}:${d.col} · ${d.severity}",
-                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                                    color = if (d.severity.equals("error", ignoreCase = true)) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                Text(
-                                    text = d.message,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                )
-                            }
+                            Text(
+                                text = "${d.file}:${d.line}:${d.col} · ${d.severity}",
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                color = if (d.severity.equals("error", ignoreCase = true)) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                text = d.message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                        if (idx < workspaceContext.diagnostics.lastIndex) {
+                            HairlineDivider()
                         }
                     }
                 }

@@ -198,10 +198,47 @@ private fun parseSectionLines(sectionLines: List<String>): SectionParseResult {
 fun formatDiffStats(added: Int, removed: Int): String = "+$added -$removed"
 
 @Composable
+fun DiffStatText(
+    added: Int,
+    removed: Int,
+    modifier: Modifier = Modifier,
+) {
+    if (added <= 0 && removed <= 0) return
+    val extras = SidekickThemeExtras.colors
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (added > 0) {
+            Text(
+                text = "+$added",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.SemiBold,
+                ),
+                color = extras.success,
+            )
+        }
+        if (removed > 0) {
+            Text(
+                text = "-$removed",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.SemiBold,
+                ),
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+}
+
+@Composable
 fun DiffCodeBlock(
     lines: List<DiffLine>,
     modifier: Modifier = Modifier,
     maxLines: Int = 100,
+    framed: Boolean = true,
     onCopyDiff: (() -> Unit)? = null,
     onOpenFullscreen: (() -> Unit)? = null,
 ) {
@@ -217,22 +254,21 @@ fun DiffCodeBlock(
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(10.dp),
-        color = extras.codeBg,
-        border = BorderStroke(0.5.dp, extras.hairline),
+        color = if (framed) extras.codeBg else Color.Transparent,
+        border = if (framed) BorderStroke(0.5.dp, extras.hairline) else null,
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             if (onCopyDiff != null || onOpenFullscreen != null) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 10.dp, vertical = 2.dp),
+                        .padding(horizontal = if (framed) 10.dp else 0.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Text(
-                        text = formatDiffStats(addedCount, removedCount),
-                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                        color = extras.success,
+                    DiffStatText(
+                        added = addedCount,
+                        removed = removedCount,
                         modifier = Modifier.weight(1f),
                     )
                     if (onCopyDiff != null) {

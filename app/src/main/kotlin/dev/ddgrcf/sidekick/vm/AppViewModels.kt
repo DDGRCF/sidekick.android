@@ -20,12 +20,14 @@ import dev.ddgrcf.sidekick.core.store.SessionEntity
 import dev.ddgrcf.sidekick.data.SessionRepository
 import dev.ddgrcf.sidekick.data.UiPart
 import dev.ddgrcf.sidekick.ui.hasNonQuestionToolCall
+import dev.ddgrcf.sidekick.proto.v1.Backend
 import dev.ddgrcf.sidekick.proto.v1.Key
 import dev.ddgrcf.sidekick.proto.v1.PresenceSource
 import dev.ddgrcf.sidekick.proto.v1.RuntimeAnswer
 import dev.ddgrcf.sidekick.proto.v1.RuntimeMode
 import dev.ddgrcf.sidekick.proto.v1.RuntimeRequest
 import dev.ddgrcf.sidekick.proto.v1.RuntimeRequestKind
+import dev.ddgrcf.sidekick.proto.v1.Session
 import dev.ddgrcf.sidekick.proto.v1.SessionConfig
 import dev.ddgrcf.sidekick.proto.v1.SlashCommandSource
 import dev.ddgrcf.sidekick.proto.v1.Stream
@@ -695,6 +697,43 @@ class BridgeViewModel @Inject constructor(
     }
 }
 
+data class NvimHandoverState(
+    val active: Boolean = false,
+    val switching: Boolean = false,
+    val message: String = "",
+    val canTakeOverBack: Boolean = false,
+)
+
+internal fun findNvimMuxSession(
+    sessions: List<Session>,
+    previousSid: String,
+    existingSidsBeforeHandover: Set<String>,
+    tool: String,
+    cwd: String,
+    convId: String,
+): Session? {
+    val normCwd = cwd.trim().trimEnd('/')
+    val candidates = sessions.filter { s ->
+        s.live &&
+            s.id.isNotBlank() &&
+            s.id != previousSid &&
+            s.backend != Backend.BACKEND_RPC &&
+            s.tool.equals(tool, ignoreCase = true)
+    }
+    if (convId.isNotBlank()) {
+        candidates
+            .filter { it.conversation?.id == convId }
+            .maxByOrNull { it.last_activity_unix_ms }
+            ?.let { return it }
+    }
+    return candidates
+        .filter { s ->
+            s.id !in existingSidsBeforeHandover &&
+                (normCwd.isEmpty() || s.cwd.isBlank() || s.cwd.trim().trimEnd('/') == normCwd)
+        }
+        .maxByOrNull { it.last_activity_unix_ms }
+}
+
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class SessionViewModel @Inject constructor(
@@ -774,6 +813,9 @@ class SessionViewModel @Inject constructor(
     private val _lastResumeCommand = MutableStateFlow<String?>(null)
     val lastResumeCommand: StateFlow<String?> = _lastResumeCommand.asStateFlow()
 
+    private val _nvimHandover = MutableStateFlow(NvimHandoverState())
+    val nvimHandover: StateFlow<NvimHandoverState> = _nvimHandover.asStateFlow()
+
     private var bridgeId: String = ""
     private var sid: String = ""
     private var tool: String = ""
@@ -784,11 +826,13 @@ class SessionViewModel @Inject constructor(
     private var lastPromptMaxSeq: Long = 0L
     private var lastCommittedTurnAssistantText: String? = null
     private var activeJob: Job? = null
+    private var nvimHandoverJob: Job? = null
     private var fileSearchJob: Job? = null
     private var lastPresenceSentMs = 0L
 
     fun attach(bridgeId: String, sid: String, tool: String, convId: String, structuredHistory: Boolean) {
         if (this.bridgeId == bridgeId && this.sid == sid) return
+        nvimHandoverJob?.cancel()
         this.bridgeId = bridgeId
         this.sid = sid
         this.tool = tool
@@ -807,6 +851,7 @@ class SessionViewModel @Inject constructor(
         _workspaceContextLoading.value = false
         _turnStartedMs.value = null
         _lastResumeCommand.value = null
+        _nvimHandover.value = NvimHandoverState()
         _isRpcSession.value = repo.isRpcSession(bridgeId, sid)
         _syncingHistory.value = structuredHistory && convId.isNotBlank()
         _activeConvId.value = convId.ifBlank { "_pending_$sid" }
@@ -983,8 +1028,20 @@ class SessionViewModel @Inject constructor(
 
     fun decodeParts(partsJson: String): List<UiPart> = repo.decodeParts(partsJson)
 
+    private fun guardHandedOff(): Boolean {
+        val ho = _nvimHandover.value
+        if (!ho.active) return false
+        _toast.value = if (ho.switching) {
+            "正在切换至本地 Neovim 同步会话…"
+        } else {
+            "会话已移交至本地 Neovim，请点「切回手机接管」或返回列表"
+        }
+        return true
+    }
+
     fun sendInput(text: String, submit: Boolean) {
         if (bridgeId.isBlank() || sid.isBlank()) return
+        if (guardHandedOff()) return
         val normalized = if (submit) {
             val trimmed = text.trim()
             if (trimmed.startsWith("/") && !trimmed.any { it.isWhitespace() }) trimmed else text
@@ -1017,6 +1074,7 @@ class SessionViewModel @Inject constructor(
     }
 
     fun sendWithAttachments(text: String, submit: Boolean) {
+        if (guardHandedOff()) return
         val atts = _pendingAttachments.value
         if (atts.isEmpty()) {
             sendInput(text, submit)
@@ -1200,12 +1258,13 @@ class SessionViewModel @Inject constructor(
 
     fun refreshWorkspaceContext(includeDiff: Boolean = false) {
         val currentBridgeId = bridgeId
-        val currentSid = sid
-        if (currentBridgeId.isBlank() || currentSid.isBlank()) return
+        val currentSid = if (_nvimHandover.value.active) "" else sid
+        val fallbackCwd = sessionCwd.ifBlank { _workspaceContext.value?.cwd.orEmpty() }
+        if (currentBridgeId.isBlank() || (currentSid.isBlank() && fallbackCwd.isBlank())) return
         viewModelScope.launch {
             _workspaceContextLoading.value = true
             runCatching {
-                repo.getWorkspaceContext(currentBridgeId, currentSid, sessionCwd, includeDiff)
+                repo.getWorkspaceContext(currentBridgeId, currentSid, fallbackCwd, includeDiff)
             }.onSuccess { wc ->
                 if (wc != null) {
                     val prevDiff = _workspaceContext.value?.gitDiff.orEmpty()
@@ -1224,31 +1283,94 @@ class SessionViewModel @Inject constructor(
         }
     }
 
-    fun openInNvim(stopRemoteRpc: Boolean = true) {
+    fun openInNvim(
+        stopRemoteRpc: Boolean = true,
+        onOpenSession: ((sid: String, tool: String, title: String, convId: String, structured: Boolean) -> Unit)? = null,
+    ) {
         val currentBridgeId = bridgeId
         val currentSid = sid
+        val currentTool = tool
+        val currentConvId = convId
+        val currentCwd = sessionCwd.ifBlank { _workspaceContext.value?.cwd.orEmpty() }
+        val currentStructured = structured
+        val wasRpc = _isRpcSession.value
         if (currentBridgeId.isBlank() || currentSid.isBlank()) return
-        viewModelScope.launch {
+        nvimHandoverJob?.cancel()
+        nvimHandoverJob = viewModelScope.launch {
+            val existingSidsBefore = if (wasRpc && stopRemoteRpc) {
+                (runCatching { repo.refreshSessions(currentBridgeId) }.getOrNull().orEmpty().map { it.id } + currentSid).toSet()
+            } else {
+                setOf(currentSid)
+            }
             runCatching {
                 repo.openInNvim(
                     bridgeId = currentBridgeId,
                     sid = currentSid,
-                    tool = tool,
-                    cwd = sessionCwd.ifBlank { _workspaceContext.value?.cwd.orEmpty() },
-                    convId = convId,
+                    tool = currentTool,
+                    cwd = currentCwd,
+                    convId = currentConvId,
                     stopRemoteRpc = stopRemoteRpc,
                 )
             }.onSuccess { resp ->
-                if (resp != null) {
-                    _lastResumeCommand.value = if (!resp.opened && resp.resume_command.isNotBlank()) {
-                        resp.resume_command
-                    } else {
-                        null
+                if (resp == null) return@onSuccess
+                if (!resp.opened) {
+                    _lastResumeCommand.value = resp.resume_command.takeIf { it.isNotBlank() }
+                    _toast.value = resp.message.ifBlank { "未检测到运行中的 Neovim" }
+                    return@onSuccess
+                }
+                _lastResumeCommand.value = null
+                if (!wasRpc || !stopRemoteRpc) {
+                    _toast.value = resp.message.ifBlank { "已在本地 Neovim Sidekick 面板打开" }
+                    return@onSuccess
+                }
+                // Old headless RPC session was stopped by bridge; stop subscribing to dead sid immediately.
+                activeJob?.cancel()
+                _streamingDraft.value = StreamingMessageState()
+                _interactiveDialog.value = null
+                _pendingRuntimeRequests.value = emptyList()
+                _turnStartedMs.value = null
+                _nvimHandover.value = NvimHandoverState(
+                    active = true,
+                    switching = onOpenSession != null,
+                    message = "已在本地 Neovim 打开，正在检测 mux 同步会话…",
+                    canTakeOverBack = currentConvId.isNotBlank(),
+                )
+                if (onOpenSession != null) {
+                    var matched: Session? = null
+                    for (attempt in 0 until 8) {
+                        delay(if (attempt == 0) 350L else 450L)
+                        val latest = runCatching { repo.refreshSessions(currentBridgeId) }.getOrNull().orEmpty()
+                        matched = findNvimMuxSession(
+                            sessions = latest,
+                            previousSid = currentSid,
+                            existingSidsBeforeHandover = existingSidsBefore,
+                            tool = currentTool,
+                            cwd = currentCwd,
+                            convId = currentConvId,
+                        )
+                        if (matched != null) break
                     }
-                    _toast.value = resp.message.ifBlank {
-                        if (resp.opened) "已在本地 Neovim 打开" else "未检测到运行中的 Neovim"
+                    if (matched != null) {
+                        val backendLabel = if (matched.backend == Backend.BACKEND_ZELLIJ) "zellij" else "tmux"
+                        _nvimHandover.value = NvimHandoverState()
+                        _toast.value = "已自动切换至 Neovim 同步会话"
+                        onOpenSession(
+                            matched.id,
+                            matched.tool,
+                            matched.title.ifBlank { "${matched.tool} · $backendLabel" },
+                            matched.conversation?.id?.ifBlank { currentConvId } ?: currentConvId,
+                            currentStructured,
+                        )
+                        return@onSuccess
                     }
                 }
+                _nvimHandover.value = NvimHandoverState(
+                    active = true,
+                    switching = false,
+                    message = "会话已移交至本地 Neovim（开启 cli.mux 可双端实时同步）",
+                    canTakeOverBack = currentConvId.isNotBlank(),
+                )
+                _toast.value = resp.message.ifBlank { "会话已移交至本地 Neovim" }
             }.onFailure { err ->
                 _toast.value = "在 Neovim 打开失败: ${err.message ?: err}"
             }
@@ -1271,6 +1393,7 @@ class SessionViewModel @Inject constructor(
             runCatching { repo.startSession(currentBridgeId, tool, cwd, currentConvId) }
                 .onSuccess { sess ->
                     if (sess != null) {
+                        _nvimHandover.value = NvimHandoverState()
                         _toast.value = "已切换为原生 RPC 接管"
                         onReady(
                             sess.id,
@@ -1374,6 +1497,7 @@ class SessionViewModel @Inject constructor(
 
     fun updateModel(modelId: String) {
         if (bridgeId.isBlank() || sid.isBlank() || modelId.isBlank()) return
+        if (guardHandedOff()) return
         val prev = _sessionConfig.value
         if (prev != null) {
             val pickedLevels = prev.availableModels.firstOrNull { it.id == modelId }?.thinkingLevels.orEmpty()
@@ -1392,6 +1516,7 @@ class SessionViewModel @Inject constructor(
 
     fun updateThinkingLevel(level: String) {
         if (bridgeId.isBlank() || sid.isBlank() || level.isBlank()) return
+        if (guardHandedOff()) return
         val prev = _sessionConfig.value
         if (prev != null) {
             _sessionConfig.value = prev.copy(thinkingLevel = level)
@@ -1405,6 +1530,7 @@ class SessionViewModel @Inject constructor(
 
     fun updateRuntimeMode(mode: RuntimeModeUi) {
         if (bridgeId.isBlank() || sid.isBlank() || mode == RuntimeModeUi.UNSPECIFIED) return
+        if (guardHandedOff()) return
         val prev = _sessionConfig.value
         if (prev != null) {
             _sessionConfig.value = prev.copy(runtimeMode = mode)
@@ -1418,6 +1544,7 @@ class SessionViewModel @Inject constructor(
 
     fun respondApproval(requestId: String, decision: String, feedback: String = "") {
         if (bridgeId.isBlank() || sid.isBlank() || requestId.isBlank()) return
+        if (guardHandedOff()) return
         _pendingRuntimeRequests.value = _pendingRuntimeRequests.value.filterNot { it.requestId == requestId }
         viewModelScope.launch {
             runCatching {
@@ -1434,6 +1561,7 @@ class SessionViewModel @Inject constructor(
 
     fun respondUserInput(requestId: String, answers: List<RuntimeAnswerInput>, cancelled: Boolean = false) {
         if (bridgeId.isBlank() || sid.isBlank() || requestId.isBlank()) return
+        if (guardHandedOff()) return
         _pendingRuntimeRequests.value = _pendingRuntimeRequests.value.filterNot { it.requestId == requestId }
         viewModelScope.launch {
             runCatching {
@@ -1456,6 +1584,7 @@ class SessionViewModel @Inject constructor(
 
     fun interruptTurn() {
         if (bridgeId.isBlank() || sid.isBlank()) return
+        if (guardHandedOff()) return
         viewModelScope.launch {
             runCatching { repo.interruptTurn(bridgeId, sid) }
                 .onFailure { _toast.value = it.message ?: "中断失败" }
@@ -1474,6 +1603,10 @@ class SessionViewModel @Inject constructor(
 
     fun stopSession(onStopped: () -> Unit) {
         if (bridgeId.isBlank() || sid.isBlank()) return
+        if (_nvimHandover.value.active) {
+            onStopped()
+            return
+        }
         viewModelScope.launch {
             runCatching { repo.stopSession(bridgeId, sid) }
                 .onSuccess { onStopped() }
@@ -1504,6 +1637,7 @@ class SessionViewModel @Inject constructor(
 
     fun sendKeys(keys: List<Key>) {
         if (bridgeId.isBlank() || sid.isBlank() || keys.isEmpty()) return
+        if (guardHandedOff()) return
         viewModelScope.launch {
             runCatching { repo.sendKeys(bridgeId, sid, keys) }
                 .onFailure { _toast.value = it.message ?: "按键发送失败" }
@@ -1511,7 +1645,7 @@ class SessionViewModel @Inject constructor(
     }
 
     fun onFocusChanged(focused: Boolean) {
-        if (bridgeId.isBlank() || sid.isBlank()) return
+        if (bridgeId.isBlank() || sid.isBlank() || _nvimHandover.value.active) return
         val now = System.currentTimeMillis()
         if (focused && now - lastPresenceSentMs < 1_000L) return
         lastPresenceSentMs = now
@@ -1534,6 +1668,7 @@ class SessionViewModel @Inject constructor(
         val currentBridgeId = bridgeId
         val currentSid = sid
         if (currentBridgeId.isBlank() || currentSid.isBlank() || _handoverBusy.value) return
+        if (guardHandedOff()) return
         viewModelScope.launch {
             _handoverBusy.value = true
             runCatching {
@@ -1570,7 +1705,7 @@ class SessionViewModel @Inject constructor(
 
     fun searchWorkspaceFiles(query: String) {
         fileSearchJob?.cancel()
-        if (bridgeId.isBlank() || sid.isBlank()) return
+        if (bridgeId.isBlank() || sid.isBlank() || _nvimHandover.value.active) return
         fileSearchJob = viewModelScope.launch {
             delay(160)
             runCatching { repo.listFiles(bridgeId, sid, query.trim(), limit = 40) }
@@ -1612,9 +1747,10 @@ class SessionViewModel @Inject constructor(
     }
 
     override fun onCleared() {
+        nvimHandoverJob?.cancel()
         val bid = bridgeId
         val s = sid
-        if (bid.isNotBlank() && s.isNotBlank()) {
+        if (bid.isNotBlank() && s.isNotBlank() && !_nvimHandover.value.active) {
             kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                 repo.unsubscribe(bid, s)
             }

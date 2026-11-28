@@ -31,7 +31,10 @@ import dev.ddgrcf.sidekick.core.relay.RelayDevice
 import dev.ddgrcf.sidekick.core.store.MessageEntity
 import dev.ddgrcf.sidekick.core.store.SessionEntity
 import dev.ddgrcf.sidekick.data.UiPart
+import dev.ddgrcf.sidekick.proto.v1.Backend
+import dev.ddgrcf.sidekick.proto.v1.Conversation
 import dev.ddgrcf.sidekick.proto.v1.Key
+import dev.ddgrcf.sidekick.proto.v1.Session
 import dev.ddgrcf.sidekick.ui.BridgeContent
 import dev.ddgrcf.sidekick.ui.DemoPreviewFlow
 import dev.ddgrcf.sidekick.ui.HomeContent
@@ -46,6 +49,7 @@ import dev.ddgrcf.sidekick.vm.MediaKind
 import dev.ddgrcf.sidekick.vm.ModelOptionUi
 import dev.ddgrcf.sidekick.vm.InteractiveDialogOptionUi
 import dev.ddgrcf.sidekick.vm.InteractiveDialogState
+import dev.ddgrcf.sidekick.vm.NvimHandoverState
 import dev.ddgrcf.sidekick.vm.OptimisticUserMessage
 import dev.ddgrcf.sidekick.vm.PendingAttachment
 import dev.ddgrcf.sidekick.vm.RuntimeAnswerInput
@@ -63,7 +67,9 @@ import dev.ddgrcf.sidekick.vm.ChangedFileUi
 import dev.ddgrcf.sidekick.vm.DiagnosticItemUi
 import dev.ddgrcf.sidekick.vm.WorkspaceFileSuggestion
 import dev.ddgrcf.sidekick.vm.coreBuiltinSlashCommands
+import dev.ddgrcf.sidekick.vm.findNvimMuxSession
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -1701,5 +1707,158 @@ class AppUiTest {
         composeRule.onNodeWithContentDescription("关闭全屏 Diff").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("fullscreen_diff_dialog").assertDoesNotExist()
+    }
+
+    @Test
+    fun userBubbleLongPressShowsCopyQuoteAndReeditActions() {
+        var sentPayload = ""
+        composeRule.setContent {
+            SidekickTheme(darkTheme = false) {
+                SessionContent(
+                    title = "codex rpc",
+                    tool = "codex",
+                    sessionId = "codex 1",
+                    structuredHistory = true,
+                    isRpcSession = true,
+                    live = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = listOf(
+                        MessageEntity("b1", "c1", 1, "ROLE_USER", """[{"type":"text","text":"explain main loop"}]""", 1L, null),
+                    ),
+                    decodeParts = { listOf(UiPart.Text("explain main loop")) },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = {},
+                    onSendInput = { txt, submit -> if (submit) sentPayload = txt },
+                    onSendKey = {},
+                    onFocusChanged = {},
+                )
+            }
+        }
+        // Wait for the initial 2.4s SessionTitleDetailsOverlay peek to auto-collapse so the top bubble is unobstructed.
+        composeRule.mainClock.advanceTimeBy(2600L)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("explain main loop").performTouchInput { longClick() }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("复制消息").assertIsDisplayed()
+        composeRule.onNodeWithText("引用回复").assertIsDisplayed()
+        composeRule.onNodeWithText("填入输入框重编").assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("发送").performClick()
+        assertEquals("explain main loop", sentPayload)
+    }
+
+    @Test
+    fun findNvimMuxSessionMatchesConversationOrNewMuxSession() {
+        val oldMux = Session(
+            id = "codex 1111 existing",
+            tool = "codex",
+            cwd = "/repo/sidekick.nvim",
+            backend = Backend.BACKEND_TMUX,
+            live = true,
+            last_activity_unix_ms = 100L,
+        )
+        val sameConvMux = Session(
+            id = "codex 1111 new-conv",
+            tool = "codex",
+            cwd = "/repo/sidekick.nvim",
+            backend = Backend.BACKEND_TMUX,
+            live = true,
+            conversation = Conversation(id = "conv-123", provider = "codex", resumable = true),
+            last_activity_unix_ms = 200L,
+        )
+        val rpcTwin = Session(
+            id = "codex 1111 rpc-new",
+            tool = "codex",
+            cwd = "/repo/sidekick.nvim",
+            backend = Backend.BACKEND_RPC,
+            live = true,
+            conversation = Conversation(id = "conv-123", provider = "codex", resumable = true),
+            last_activity_unix_ms = 300L,
+        )
+        val matchedByConv = findNvimMuxSession(
+            sessions = listOf(oldMux, rpcTwin, sameConvMux),
+            previousSid = "codex 1111 rpc-prev",
+            existingSidsBeforeHandover = setOf(oldMux.id, "codex 1111 rpc-prev"),
+            tool = "codex",
+            cwd = "/repo/sidekick.nvim",
+            convId = "conv-123",
+        )
+        assertEquals(sameConvMux.id, matchedByConv?.id)
+
+        val freshAnonMux = Session(
+            id = "codex 1111 anon",
+            tool = "codex",
+            cwd = "/repo/sidekick.nvim/",
+            backend = Backend.BACKEND_ZELLIJ,
+            live = true,
+            last_activity_unix_ms = 250L,
+        )
+        val matchedByNewMux = findNvimMuxSession(
+            sessions = listOf(oldMux, freshAnonMux),
+            previousSid = "codex 1111 rpc-prev",
+            existingSidsBeforeHandover = setOf(oldMux.id, "codex 1111 rpc-prev"),
+            tool = "codex",
+            cwd = "/repo/sidekick.nvim",
+            convId = "conv-999",
+        )
+        assertEquals(freshAnonMux.id, matchedByNewMux?.id)
+
+        val noMatch = findNvimMuxSession(
+            sessions = listOf(oldMux, rpcTwin),
+            previousSid = "codex 1111 rpc-prev",
+            existingSidsBeforeHandover = setOf(oldMux.id, "codex 1111 rpc-prev"),
+            tool = "codex",
+            cwd = "/repo/sidekick.nvim",
+            convId = "conv-other",
+        )
+        assertNull(noMatch)
+    }
+
+    @Test
+    fun sessionContentShowsNvimHandoverBannerWithTakeoverAndBackActions() {
+        var tookOver = false
+        var wentBack = false
+        composeRule.setContent {
+            SidekickTheme(darkTheme = false) {
+                SessionContent(
+                    title = "codex rpc",
+                    tool = "codex",
+                    sessionId = "codex 1",
+                    convId = "conv-1",
+                    structuredHistory = true,
+                    isRpcSession = true,
+                    live = true,
+                    connectionState = ConnectionState.CONNECTED,
+                    messages = emptyList(),
+                    nvimHandover = NvimHandoverState(
+                        active = true,
+                        switching = false,
+                        message = "会话已移交至本地 Neovim（开启 cli.mux 可双端实时同步）",
+                        canTakeOverBack = true,
+                    ),
+                    decodeParts = { emptyList() },
+                    screenLines = emptyList(),
+                    screenRevision = 1L,
+                    localTyping = false,
+                    toast = null,
+                    onClearToast = {},
+                    onBack = { wentBack = true },
+                    onSendInput = { _, _ -> },
+                    onSendKey = {},
+                    onTakeOverAsRpc = { tookOver = true },
+                    onFocusChanged = {},
+                )
+            }
+        }
+        composeRule.onNodeWithTag("nvim_handover_banner").assertIsDisplayed()
+        composeRule.onNodeWithText("会话已移交至本地 Neovim（开启 cli.mux 可双端实时同步）").assertIsDisplayed()
+        composeRule.onNodeWithText("切回手机接管").assertIsDisplayed().performClick()
+        assertTrue(tookOver)
+        composeRule.onNodeWithText("返回列表").assertIsDisplayed().performClick()
+        assertTrue(wentBack)
     }
 }

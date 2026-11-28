@@ -24,9 +24,11 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.rememberTransformableState
@@ -226,6 +228,7 @@ import dev.ddgrcf.sidekick.proto.v1.ToolInfo
 import dev.ddgrcf.sidekick.ui.theme.SidekickThemeExtras
 import dev.ddgrcf.sidekick.vm.MediaKind
 import dev.ddgrcf.sidekick.vm.InteractiveDialogState
+import dev.ddgrcf.sidekick.vm.NvimHandoverState
 import dev.ddgrcf.sidekick.vm.OptimisticUserMessage
 import dev.ddgrcf.sidekick.vm.ModelOptionUi
 import dev.ddgrcf.sidekick.vm.PendingAttachment
@@ -306,6 +309,7 @@ fun SessionScreen(
     val workspaceContextLoading by vm.workspaceContextLoading.collectAsStateWithLifecycle()
     val turnStartedMs by vm.turnStartedMs.collectAsStateWithLifecycle()
     val lastResumeCommand by vm.lastResumeCommand.collectAsStateWithLifecycle()
+    val nvimHandover by vm.nvimHandover.collectAsStateWithLifecycle()
     val toast by vm.toast.collectAsStateWithLifecycle()
 
     SessionContent(
@@ -327,6 +331,7 @@ fun SessionScreen(
         workspaceContextLoading = workspaceContextLoading,
         turnStartedMs = turnStartedMs,
         lastResumeCommand = lastResumeCommand,
+        nvimHandover = nvimHandover,
         decodeParts = vm::decodeParts,
         screenLines = screenLines,
         screenRevision = screenRev,
@@ -356,9 +361,9 @@ fun SessionScreen(
         onInterruptTurn = vm::interruptTurn,
         onRefreshWorkspaceContext = vm::refreshWorkspaceContext,
         onFormatContextInjection = vm::formatContextInjection,
-        onOpenInNvim = { vm.openInNvim(stopRemoteRpc = true) },
+        onOpenInNvim = { vm.openInNvim(stopRemoteRpc = true, onOpenSession = onOpenSession) },
         onDismissResumeCommand = vm::clearResumeCommand,
-        onTakeOverAsRpc = if (!isRpcSession && convId.isNotBlank()) {
+        onTakeOverAsRpc = if ((!isRpcSession || nvimHandover.active) && convId.isNotBlank()) {
             { vm.takeOverAsRpc(onOpenSession) }
         } else {
             null
@@ -456,6 +461,7 @@ fun SessionContent(
     },
     onOpenInNvim: (() -> Unit)? = null,
     onDismissResumeCommand: () -> Unit = {},
+    nvimHandover: NvimHandoverState = NvimHandoverState(),
     onTakeOverAsRpc: (() -> Unit)? = null,
     onSearchFiles: (String) -> Unit = {},
     onAddAttachment: (PendingAttachment) -> Unit = {},
@@ -684,14 +690,10 @@ fun SessionContent(
                 onOpenOverflow = { showOverflow = true },
                 onDismissOverflow = { showOverflow = false },
                 onRefreshMessages = onRefreshMessages,
-                onOpenModelPicker = when {
-                    sessionConfig != null -> {
-                        { showSettingsSheet = true }
-                    }
-                    live && structuredHistory -> {
-                        { onSendInput("/model", true) }
-                    }
-                    else -> null
+                onOpenModelPicker = if (sessionConfig == null && live && structuredHistory) {
+                    { onSendInput("/model", true) }
+                } else {
+                    null
                 },
                 onOpenHandover = { showHandoverSheet = true },
                 onOpenInNvim = onOpenInNvim,
@@ -759,6 +761,70 @@ fun SessionContent(
                 .fillMaxSize()
                 .padding(padding),
         ) {
+            if (nvimHandover.active) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("nvim_handover_banner"),
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            if (nvimHandover.switching) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                            Text(
+                                text = nvimHandover.message.ifBlank { "会话已移交至本地 Neovim" },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        if (!nvimHandover.switching) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 12.dp, end = 12.dp, bottom = 6.dp),
+                                horizontalArrangement = Arrangement.End,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                if (nvimHandover.canTakeOverBack && onTakeOverAsRpc != null) {
+                                    TextButton(
+                                        onClick = onTakeOverAsRpc,
+                                        modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                                    ) {
+                                        Text("切回手机接管")
+                                    }
+                                }
+                                TextButton(
+                                    onClick = onBack,
+                                    modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                                ) {
+                                    Text("返回列表")
+                                }
+                            }
+                        }
+                        HairlineDivider()
+                    }
+                }
+            }
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -807,6 +873,9 @@ fun SessionContent(
                         },
                         onQuoteMessage = { author, excerpt ->
                             quotedMessage = QuotedMessage(author, excerpt)
+                        },
+                        onReeditMessage = { txt ->
+                            pendingInsertSnippet = ((pendingInsertSnippet?.first ?: 0) + 1) to txt
                         },
                         onAutoFetchMedia = onRequestMedia,
                         onOpenImage = { media ->
@@ -1009,6 +1078,7 @@ fun SessionContent(
                     pendingInsertSnippet = ((pendingInsertSnippet?.first ?: 0) + 1) to snippet
                 }
             },
+            onOpenInNvim = onOpenInNvim,
             onDismiss = { showNvimSheet = false },
         )
     }
@@ -1131,6 +1201,11 @@ private fun SessionAdaptiveHeader(
                                     onOpenHandover()
                                 },
                             )
+                        }
+                        if ((onOpenInNvim != null || onTakeOverAsRpc != null || canHandover) &&
+                            (onOpenModelPicker != null || structuredHistory || isTerminalTab || sessionId.isNotBlank())
+                        ) {
+                            HairlineDivider()
                         }
                         if (onOpenModelPicker != null) {
                             DropdownMenuItem(
@@ -1427,6 +1502,7 @@ private suspend fun scrollToListEnd(listState: LazyListState, lastIndex: Int) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ChatView(
     tool: String,
@@ -1439,6 +1515,7 @@ private fun ChatView(
     fetchedMediaPaths: Map<String, String>,
     onCopyText: (String, String) -> Unit,
     onQuoteMessage: (String, String) -> Unit,
+    onReeditMessage: (String) -> Unit = {},
     onAutoFetchMedia: (UiPart.Media) -> Unit,
     onOpenImage: (UiPart.Media) -> Unit,
     onOpenVideo: (UiPart.Media) -> Unit,
@@ -1540,6 +1617,8 @@ private fun ChatView(
         }
     }
 
+    var bubbleMenuText by remember { mutableStateOf<String?>(null) }
+
     Box(modifier = modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             if (syncingHistory) {
@@ -1564,8 +1643,7 @@ private fun ChatView(
                             is ChatTurn.User -> UserPromptTurn(
                                 parts = turn.textParts + turn.mediaParts,
                                 fetchedMediaPaths = fetchedMediaPaths,
-                                onCopyText = onCopyText,
-                                onQuote = { excerpt -> onQuoteMessage("你", excerpt) },
+                                onLongPressText = { text -> bubbleMenuText = text },
                                 onAutoFetchMedia = onAutoFetchMedia,
                                 onOpenImage = onOpenImage,
                                 onOpenVideo = onOpenVideo,
@@ -1590,8 +1668,7 @@ private fun ChatView(
                         UserPromptTurn(
                             parts = listOf(UiPart.Text(opt.text)),
                             fetchedMediaPaths = fetchedMediaPaths,
-                            onCopyText = onCopyText,
-                            onQuote = { excerpt -> onQuoteMessage("你", excerpt) },
+                            onLongPressText = { text -> bubbleMenuText = text },
                             onAutoFetchMedia = onAutoFetchMedia,
                             onOpenImage = onOpenImage,
                             onOpenVideo = onOpenVideo,
@@ -1621,6 +1698,73 @@ private fun ChatView(
                     .align(Alignment.BottomEnd)
                     .padding(12.dp),
             )
+        }
+    }
+
+    bubbleMenuText?.let { targetText ->
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        val actions = listOf(
+            Triple(Icons.Rounded.ContentCopy, "复制消息") {
+                bubbleMenuText = null
+                onCopyText(targetText, "消息")
+            },
+            Triple(Icons.Rounded.FormatQuote, "引用回复") {
+                bubbleMenuText = null
+                onQuoteMessage("你", summarizeExcerpt(targetText))
+            },
+            Triple(Icons.Rounded.Edit, "填入输入框重编") {
+                bubbleMenuText = null
+                onReeditMessage(targetText)
+            },
+        )
+        ModalBottomSheet(
+            onDismissRequest = { bubbleMenuText = null },
+            sheetState = sheetState,
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(bottom = 12.dp),
+            ) {
+                Text(
+                    text = summarizeExcerpt(targetText),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                )
+                actions.forEach { (icon, label, action) ->
+                    HairlineDivider()
+                    Surface(
+                        onClick = action,
+                        color = MaterialTheme.colorScheme.surface,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 52.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        ) {
+                            Icon(
+                                imageVector = icon,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -2133,13 +2277,7 @@ private fun WorkLogActivityRow(
             } else {
                 Spacer(Modifier.weight(1f))
             }
-            if (activity.addedLines > 0 || activity.removedLines > 0) {
-                Text(
-                    text = "+${activity.addedLines} -${activity.removedLines}",
-                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                    color = extras.success,
-                )
-            }
+            DiffStatText(added = activity.addedLines, removed = activity.removedLines)
             if (activity.isError) {
                 Icon(
                     imageVector = Icons.Rounded.ErrorOutline,
@@ -2244,6 +2382,7 @@ private fun WorkLogActivityRow(
                         DiffCodeBlock(
                             lines = parsedPatch,
                             maxLines = 80,
+                            framed = false,
                             onCopyDiff = { onCopyText(activity.detailDiff, "Diff") },
                             onOpenFullscreen = { showFullscreenToolDiff = true },
                         )
@@ -2582,24 +2721,25 @@ private fun InteractiveDialogOverlay(
                     onClick = onSwitchToTerminal,
                     modifier = Modifier.defaultMinSize(minHeight = 48.dp),
                 ) {
-                    Text("在 Terminal 中操作")
+                    Text("切到终端")
                 }
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun UserPromptTurn(
     parts: List<UiPart>,
     fetchedMediaPaths: Map<String, String>,
-    onCopyText: (String, String) -> Unit,
-    onQuote: (String) -> Unit,
+    onLongPressText: (String) -> Unit,
     onAutoFetchMedia: (UiPart.Media) -> Unit,
     onOpenImage: (UiPart.Media) -> Unit,
     onOpenVideo: (UiPart.Media) -> Unit,
 ) {
     val extras = SidekickThemeExtras.colors
+    val haptic = LocalHapticFeedback.current
     val textParts = parts.filterIsInstance<UiPart.Text>()
     val mediaParts = parts.filterIsInstance<UiPart.Media>()
     val userPlainText = remember(textParts) { textParts.joinToString("\n") { it.text }.trim() }
@@ -2625,32 +2765,33 @@ private fun UserPromptTurn(
                 modifier = Modifier.widthIn(max = 320.dp),
                 shape = RoundedCornerShape(22.dp),
                 color = extras.userBubble,
+                border = BorderStroke(0.5.dp, extras.userBubbleBorder),
             ) {
-                SelectionContainer {
-                    Column(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        textParts.forEach { tp ->
-                            Text(
-                                text = tp.text,
-                                style = MaterialTheme.typography.bodyLarge.copy(
-                                    fontSize = 16.sp,
-                                    lineHeight = 23.sp,
-                                ),
-                                color = extras.onUserBubble,
-                            )
-                        }
+                Column(
+                    modifier = Modifier
+                        .combinedClickable(
+                            onClick = {},
+                            onLongClick = {
+                                if (userPlainText.isNotEmpty()) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onLongPressText(userPlainText)
+                                }
+                            },
+                        )
+                        .padding(horizontal = 16.dp, vertical = 11.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    textParts.forEach { tp ->
+                        Text(
+                            text = tp.text,
+                            style = MaterialTheme.typography.bodyLarge.copy(
+                                fontSize = 16.sp,
+                                lineHeight = 23.sp,
+                            ),
+                            color = extras.onUserBubble,
+                        )
                     }
                 }
-            }
-            if (userPlainText.isNotEmpty()) {
-                MessageActionRow(
-                    copyContentDescription = "复制用户消息",
-                    quoteContentDescription = "引用用户消息",
-                    onCopy = { onCopyText(userPlainText, "消息") },
-                    onQuote = { onQuote(summarizeExcerpt(userPlainText)) },
-                )
             }
         }
     }
